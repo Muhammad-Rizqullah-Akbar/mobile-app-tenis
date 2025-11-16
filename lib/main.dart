@@ -1,15 +1,20 @@
 import 'package:flutter/material.dart';
 
-// ✅ Semua import wajib di atas
+// --- IMPORT SEMUA FILE YANG DIBUTUHKAN ---
+// Pastikan semua file ini ada di folder 'lib/' Anda:
 import 'admin_home_screen.dart';
-import 'booking_screen.dart';
 import 'payment_confirmation_screen.dart';
+import 'order_history_search_screen.dart'; // <<< GANTI MENJADI HALAMAN RIWAYAT PESANAN
+import 'order_history.dart'; // <<< GANTI MENJADI HALAMAN RIWAYAT PESANAN
+import 'booking_screen.dart';
 
 void main() {
   runApp(const BookingApp());
 }
 
-// --- WIDGET UTAMA: BookingApp ---
+// ----------------------------------------------------
+// --- 1. WIDGET UTAMA: BookingApp (Material App) ---
+// ----------------------------------------------------
 class BookingApp extends StatelessWidget {
   const BookingApp({super.key});
 
@@ -28,7 +33,9 @@ class BookingApp extends StatelessWidget {
   }
 }
 
-// --- LAYAR UTAMA USER ---
+// ----------------------------------------------------
+// --- 2. MAIN SCREEN DENGAN BOTTOM NAVIGATION ---
+// ----------------------------------------------------
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
@@ -39,9 +46,10 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
 
+  // Halaman dari Bottom Navbar
   static final List<Widget> _widgetOptions = <Widget>[
     const BookingScreen(),
-    const BookingPagePlaceholder(),
+    const OrderHistorySearchScreen(), // <<< TAB CARI DIGANTI JADI RIWAYAT PESANAN
     const ProfilePage(),
   ];
 
@@ -55,14 +63,12 @@ class _MainScreenState extends State<MainScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Booking Tempat Olahraga'),
+        title: const Text('Tennis Court'),
         backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
         elevation: 4,
       ),
-      body: Center(
-        child: _widgetOptions[_selectedIndex],
-      ),
+      body: _widgetOptions[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
         items: const [
           BottomNavigationBarItem(
@@ -70,8 +76,8 @@ class _MainScreenState extends State<MainScreen> {
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.search),
-            label: 'Cari',
+            icon: Icon(Icons.search), // ICON LEBIH LOGIS
+            label: 'Riwayat', // LABEL DIGANTI
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.person_outlined),
@@ -87,7 +93,9 @@ class _MainScreenState extends State<MainScreen> {
   }
 }
 
-// --- PROFILE PAGE ---
+// ----------------------------------------------------
+// --- 3. PROFILE PAGE (AKSES ADMIN & RIWAYAT) ---
+// ----------------------------------------------------
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
 
@@ -97,25 +105,35 @@ class ProfilePage extends StatelessWidget {
       padding: const EdgeInsets.all(20.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+        children: <Widget>[
           const Center(
-            child: CircleAvatar(radius: 50, child: Icon(Icons.person, size: 60)),
+            child: CircleAvatar(
+              radius: 50,
+              child: Icon(Icons.person, size: 60),
+            ),
           ),
           const SizedBox(height: 20),
-          Text('User Profile', style: Theme.of(context).textTheme.headlineSmall),
+          Text(
+            'User Profile',
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
           const Divider(),
 
+          // Menu Riwayat Pesanan
           ListTile(
-            leading: const Icon(Icons.calendar_month),
-            title: const Text('Lihat Pesanan Saya'),
+            leading: const Icon(Icons.history),
+            title: const Text('Riwayat Pesanan Saya'),
             onTap: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const PaymentConfirmationScreen()),
+                MaterialPageRoute(
+                  builder: (_) => const OrderHistoryScreen(), // <<< FIX
+                ),
               );
             },
           ),
 
+          // Menu Akses Admin
           ListTile(
             leading: const Icon(Icons.admin_panel_settings, color: Colors.red),
             title: const Text('Akses Admin Panel'),
@@ -131,8 +149,9 @@ class ProfilePage extends StatelessWidget {
 
           ElevatedButton.icon(
             onPressed: () {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(const SnackBar(content: Text('Logout dilakukan.')));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Logout dilakukan.')),
+              );
             },
             icon: const Icon(Icons.logout),
             label: const Text('Logout'),
@@ -144,18 +163,6 @@ class ProfilePage extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-// --- PLACEHOLDER SEARCH PAGE ---
-class BookingPagePlaceholder extends StatelessWidget {
-  const BookingPagePlaceholder({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Center(
-      child: Text("Halaman Pencarian/Booking: Tambahkan Fitur Pencarian di sini."),
     );
   }
 }

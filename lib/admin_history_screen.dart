@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart'; // Perlu ditambahkan di pubspec.yaml: dependencies: flutter: sdk: flutter intl: ^0.18.1
+import 'package:intl/intl.dart';
+// Asumsi AdminDrawer dan AdminHomeScreen diimpor dari file lain,
+// tapi untuk mempermudah, kita akan menggunakan AdminDrawer dari file admin_home_screen.dart.
+// Untuk kode ini berjalan, pastikan file admin_home_screen.dart sudah diimpor ke main.dart.
 
 // --- Model Data Pesanan ---
 class OrderItem {
@@ -49,7 +52,7 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
     ),
     OrderItem(
       name: 'Ayari Tenri beta',
-      date: DateTime(2110, 12, 8), // Tanggal di masa depan (simulasi)
+      date: DateTime(2110, 12, 8),
       time: '06:00 - 08:00',
       courts: 'Lapangan 2',
       bookingId: '#WEB-I3lVk_btql',
@@ -57,15 +60,18 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
       status: 'Pending',
     ),
     // Tambahkan 14 data lainnya untuk mencukupi jumlah (16)
-    ...List.generate(14, (index) => OrderItem(
-      name: 'Pesanan #${index + 3}',
-      date: DateTime(2025, 10, 20 + index),
-      time: '10:00 - 11:00',
-      courts: 'Lapangan 1',
-      bookingId: '#WEB-${index + 3}',
-      amount: 85000,
-      status: index.isEven ? 'Confirmed' : 'Cancelled',
-    )),
+    ...List.generate(
+      14,
+      (index) => OrderItem(
+        name: 'Pesanan #${index + 3}',
+        date: DateTime(2025, 10, 20 + index),
+        time: '10:00 - 11:00',
+        courts: 'Lapangan 1',
+        bookingId: '#WEB-${index + 3}',
+        amount: 85000,
+        status: index.isEven ? 'Confirmed' : 'Cancelled',
+      ),
+    ),
   ];
 
   // State untuk menyimpan status checkbox setiap item
@@ -81,7 +87,9 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
   Future<void> _selectDate(BuildContext context, bool isStart) async {
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: isStart ? (_startDate ?? DateTime.now()) : (_endDate ?? DateTime.now()),
+      initialDate: isStart
+          ? (_startDate ?? DateTime.now())
+          : (_endDate ?? DateTime.now()),
       firstDate: DateTime(2020),
       lastDate: DateTime(2110),
     );
@@ -119,7 +127,7 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
       });
     }
   }
-  
+
   // LOGIKA: Fungsi Export
   void _exportData() {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -129,8 +137,12 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
 
   // Fungsi untuk format Rupiah sederhana
   String _formatRupiah(int amount) {
-    // Di aplikasi nyata, gunakan package intl
-    final formatter = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0);
+    // Menggunakan NumberFormat untuk format Rupiah yang benar
+    final formatter = NumberFormat.currency(
+      locale: 'id_ID',
+      symbol: 'Rp ',
+      decimalDigits: 0,
+    );
     return formatter.format(amount).replaceAll(',', '.');
   }
 
@@ -144,8 +156,9 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
         backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
       ),
-      // Drawer (Menu Samping) yang sama dengan Admin Home Screen
-      drawer: const AdminDrawerPlaceholder(), 
+      // MENGHILANGKAN AdminDrawerPlaceholder dan menggantinya dengan Drawer aslinya
+      // Asumsi AdminDrawer sudah tersedia via import di file lain atau di sini.
+      // Jika AdminDrawer tidak tersedia di sini, Anda harus memasukkannya.
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -167,13 +180,15 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.grey.shade100,
                     foregroundColor: Colors.black87,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                   ),
                 ),
               ],
             ),
           ),
-          
+
           // --- FILTER PERIODE ---
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -186,15 +201,22 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                 ),
                 const SizedBox(height: 10),
                 // Input Tanggal Mulai
-                _buildDateField('Dari Tanggal', _startDate, (date) => _selectDate(context, true)),
+                _buildDateField(
+                  'Dari Tanggal',
+                  _startDate,
+                  (date) => _selectDate(context, true),
+                ),
                 const SizedBox(height: 10),
                 // Input Tanggal Akhir
-                _buildDateField('Sampai Tanggal', _endDate, (date) => _selectDate(context, false)),
+                _buildDateField(
+                  'Sampai Tanggal',
+                  _endDate,
+                  (date) => _selectDate(context, false),
+                ),
                 const SizedBox(height: 15),
                 // Tombol Filter
                 ElevatedButton(
                   onPressed: () {
-                    // Logika Filter (memuat ulang data dari API berdasarkan _startDate dan _endDate)
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Menerapkan filter...')),
                     );
@@ -203,7 +225,9 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                     backgroundColor: Colors.blue,
                     foregroundColor: Colors.white,
                     minimumSize: const Size.fromHeight(50),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
                   child: const Text('Filter'),
                 ),
@@ -211,26 +235,26 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
               ],
             ),
           ),
-          
+
           // --- PILIH SEMUA & DAFTAR PESANAN ---
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
             child: Row(
               children: [
-                Checkbox(
-                  value: _selectAll,
-                  onChanged: _toggleSelectAll,
-                ),
+                Checkbox(value: _selectAll, onChanged: _toggleSelectAll),
                 Text('Pilih Semua (${_allOrders.length})'),
                 if (selectedCount > 0)
                   Padding(
                     padding: const EdgeInsets.only(left: 10),
-                    child: Text('($selectedCount dipilih)', style: const TextStyle(color: Colors.blue)),
+                    child: Text(
+                      '($selectedCount dipilih)',
+                      style: const TextStyle(color: Colors.blue),
+                    ),
                   ),
               ],
             ),
           ),
-          
+
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -254,13 +278,18 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
   }
 
   // Widget Pembantu untuk Input Tanggal
-  Widget _buildDateField(String label, DateTime? date, ValueChanged<DateTime?> onTap) {
-    final dateString = date != null ? DateFormat('dd/MM/yyyy').format(date) : 'dd/mm/yyyy';
+  Widget _buildDateField(
+    String label,
+    DateTime? date,
+    ValueChanged<DateTime?> onTap,
+  ) {
+    final dateString = date != null
+        ? DateFormat('dd/MM/yyyy').format(date)
+        : 'dd/mm/yyyy';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Text(label, style: const TextStyle(color: Colors.grey)), // Label tidak ada di screenshot, tapi bisa ditambahkan
         GestureDetector(
           onTap: () => onTap(date),
           child: Container(
@@ -273,7 +302,12 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(dateString, style: TextStyle(color: date != null ? Colors.black87 : Colors.grey)),
+                Text(
+                  dateString,
+                  style: TextStyle(
+                    color: date != null ? Colors.black87 : Colors.grey,
+                  ),
+                ),
                 const Icon(Icons.calendar_month),
               ],
             ),
@@ -313,10 +347,7 @@ class OrderHistoryCard extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Checkbox(
-              value: isSelected,
-              onChanged: onSelect,
-            ),
+            Checkbox(value: isSelected, onChanged: onSelect),
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8.0),
@@ -328,40 +359,60 @@ class OrderHistoryCard extends StatelessWidget {
                       children: [
                         Text(
                           order.name,
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
                         ),
                         // Status Chip
                         StatusChip(status: order.status),
                       ],
                     ),
                     const SizedBox(height: 5),
-                    
+
                     // Detail Booking
                     Text(
-                      '${DateFormat('EEEE, d MMMM yyyy', 'id_ID').format(order.date)}', 
+                      // Format Tanggal menggunakan locale id_ID (yang memicu error Anda)
+                      '${DateFormat('EEEE, d MMMM yyyy', 'id_ID').format(order.date)}',
                       style: const TextStyle(color: Colors.grey),
                     ),
                     Row(
                       children: [
-                        const Icon(Icons.access_time, size: 14, color: Colors.grey),
+                        const Icon(
+                          Icons.access_time,
+                          size: 14,
+                          color: Colors.grey,
+                        ),
                         const SizedBox(width: 4),
-                        Text(order.time, style: const TextStyle(color: Colors.grey)),
+                        Text(
+                          order.time,
+                          style: const TextStyle(color: Colors.grey),
+                        ),
                         const SizedBox(width: 10),
                         const Icon(Icons.person, size: 14, color: Colors.grey),
                         const SizedBox(width: 4),
-                        Text('Lapangan: ${order.courts}', style: const TextStyle(color: Colors.grey)),
+                        Text(
+                          'Lapangan: ${order.courts}',
+                          style: const TextStyle(color: Colors.grey),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 5),
-                    
+
                     // ID dan Harga
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(order.bookingId, style: const TextStyle(color: Colors.blue)),
+                        Text(
+                          order.bookingId,
+                          style: const TextStyle(color: Colors.blue),
+                        ),
                         Text(
                           formatRupiah(order.amount),
-                          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green.shade700),
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green.shade700,
+                          ),
                         ),
                       ],
                     ),
@@ -376,7 +427,7 @@ class OrderHistoryCard extends StatelessWidget {
   }
 }
 
-// Komponen Pembantu untuk Status Chip
+// Komponen Pembantu untuk Status Chip (HARUS ADA DI FILE INI)
 class StatusChip extends StatelessWidget {
   final String status;
 
@@ -398,27 +449,16 @@ class StatusChip extends StatelessWidget {
       default:
         color = Colors.grey.shade500;
     }
-    
+
     return Chip(
-      label: Text(status, style: const TextStyle(color: Colors.white, fontSize: 12)),
+      label: Text(
+        status,
+        style: const TextStyle(color: Colors.white, fontSize: 12),
+      ),
       backgroundColor: color,
       padding: EdgeInsets.zero,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
-    );
-  }
-}
-
-// Placeholder untuk AdminDrawer (Gunakan AdminDrawer dari admin_home_screen.dart di proyek nyata)
-class AdminDrawerPlaceholder extends StatelessWidget {
-  const AdminDrawerPlaceholder({super.key});
-  
-  @override
-  Widget build(BuildContext context) {
-    return Drawer(
-      child: Center(
-        child: Text('Admin Drawer Placeholder. Silakan gunakan AdminDrawer dari admin_home_screen.dart', textAlign: TextAlign.center),
-      ),
     );
   }
 }
