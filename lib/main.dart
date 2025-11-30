@@ -1,19 +1,33 @@
 import 'package:flutter/material.dart';
+// [PENTING] Import Firebase Core
+import 'package:firebase_core/firebase_core.dart';
+// [PENTING] Import Konfigurasi (File ini dibuat otomatis oleh flutterfire configure)
+import 'firebase_options.dart';
 
 // --- IMPORT SEMUA FILE YANG DIBUTUHKAN ---
-// Pastikan semua file ini ada di folder 'lib/' Anda:
 import 'admin_home_screen.dart';
-import 'payment_confirmation_screen.dart';
-import 'order_history_search_screen.dart'; // <<< GANTI MENJADI HALAMAN RIWAYAT PESANAN
-import 'order_history.dart'; // <<< GANTI MENJADI HALAMAN RIWAYAT PESANAN
+import 'order_history_search_screen.dart';
+import 'order_history.dart';
 import 'booking_screen.dart';
+// import 'payment_confirmation_screen.dart'; // Tidak dipakai langsung di MainScreen, tapi dibutuhkan navigasi nanti
 
-void main() {
+// ----------------------------------------------------
+// --- 1. FUNGSI UTAMA (MAIN) ---
+// ----------------------------------------------------
+void main() async {
+  // 1. Pastikan engine Flutter siap sebelum menjalankan kode async
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // 2. Inisialisasi Firebase
+  // Tanpa baris ini, aplikasi akan ERROR MERAH (FirebaseException) saat dibuka
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // 3. Jalankan Aplikasi
   runApp(const BookingApp());
 }
 
 // ----------------------------------------------------
-// --- 1. WIDGET UTAMA: BookingApp (Material App) ---
+// --- 2. WIDGET UTAMA: BookingApp ---
 // ----------------------------------------------------
 class BookingApp extends StatelessWidget {
   const BookingApp({super.key});
@@ -34,7 +48,7 @@ class BookingApp extends StatelessWidget {
 }
 
 // ----------------------------------------------------
-// --- 2. MAIN SCREEN DENGAN BOTTOM NAVIGATION ---
+// --- 3. MAIN SCREEN DENGAN BOTTOM NAVIGATION ---
 // ----------------------------------------------------
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -46,10 +60,15 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
 
-  // Halaman dari Bottom Navbar
+  // Daftar Halaman untuk Bottom Navbar
   static final List<Widget> _widgetOptions = <Widget>[
+    // Tab 1: Booking Screen (Sudah diperbaiki dengan logic anti-bentrok)
     const BookingScreen(),
-    const OrderHistorySearchScreen(), // <<< TAB CARI DIGANTI JADI RIWAYAT PESANAN
+
+    // Tab 2: Pencarian Riwayat (Nanti kita perbaiki juga agar connect database)
+    const OrderHistorySearchScreen(),
+
+    // Tab 3: Profil User & Admin Link
     const ProfilePage(),
   ];
 
@@ -76,8 +95,8 @@ class _MainScreenState extends State<MainScreen> {
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.search), // ICON LEBIH LOGIS
-            label: 'Riwayat', // LABEL DIGANTI
+            icon: Icon(Icons.history), // Icon History lebih cocok
+            label: 'Riwayat',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.person_outlined),
@@ -94,7 +113,7 @@ class _MainScreenState extends State<MainScreen> {
 }
 
 // ----------------------------------------------------
-// --- 3. PROFILE PAGE (AKSES ADMIN & RIWAYAT) ---
+// --- 4. PROFILE PAGE (AKSES ADMIN & RIWAYAT) ---
 // ----------------------------------------------------
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
@@ -126,9 +145,7 @@ class ProfilePage extends StatelessWidget {
             onTap: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => const OrderHistoryScreen(), // <<< FIX
-                ),
+                MaterialPageRoute(builder: (_) => const OrderHistoryScreen()),
               );
             },
           ),
@@ -149,9 +166,10 @@ class ProfilePage extends StatelessWidget {
 
           ElevatedButton.icon(
             onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Logout dilakukan.')),
-              );
+              // Logic logout bisa ditambahkan di sini (misal FirebaseAuth.signOut)
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('Logout berhasil.')));
             },
             icon: const Icon(Icons.logout),
             label: const Text('Logout'),

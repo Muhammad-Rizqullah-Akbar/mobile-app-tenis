@@ -1,31 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
-// Asumsi AdminDrawer dan AdminHomeScreen diimpor dari file lain,
-// tapi untuk mempermudah, kita akan menggunakan AdminDrawer dari file admin_home_screen.dart.
-// Untuk kode ini berjalan, pastikan file admin_home_screen.dart sudah diimpor ke main.dart.
+import 'dart:convert';
+import 'dart:html' as html;
+import 'services/firestore_service.dart';
 
-// --- Model Data Pesanan ---
-class OrderItem {
-  final String name;
-  final DateTime date;
-  final String time;
-  final String courts;
-  final String bookingId;
-  final int amount;
-  final String status;
-
-  OrderItem({
-    required this.name,
-    required this.date,
-    required this.time,
-    required this.courts,
-    required this.bookingId,
-    required this.amount,
-    required this.status,
-  });
-}
-
-// --- Admin History Screen (Stateful Widget) ---
 class AdminHistoryScreen extends StatefulWidget {
   const AdminHistoryScreen({super.key});
 
@@ -34,56 +13,12 @@ class AdminHistoryScreen extends StatefulWidget {
 }
 
 class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
-  // State untuk Filter Periode
+  final FirestoreService _firestoreService = FirestoreService();
   DateTime? _startDate;
   DateTime? _endDate;
-  bool _selectAll = false;
+  Set<String> _selectedOrderIds = {};
+  String _filterStatus = 'Semua';
 
-  // Mock data pesanan (mereplikasi data dari Next.js)
-  final List<OrderItem> _allOrders = [
-    OrderItem(
-      name: 'Eqi',
-      date: DateTime(2025, 11, 9),
-      time: '06:00 - 08:00',
-      courts: 'Lapangan 1, Lapangan 2',
-      bookingId: '#WEB-JLOZqEEZgL',
-      amount: 340000,
-      status: 'Pending',
-    ),
-    OrderItem(
-      name: 'Ayari Tenri beta',
-      date: DateTime(2110, 12, 8),
-      time: '06:00 - 08:00',
-      courts: 'Lapangan 2',
-      bookingId: '#WEB-I3lVk_btql',
-      amount: 170000,
-      status: 'Pending',
-    ),
-    // Tambahkan 14 data lainnya untuk mencukupi jumlah (16)
-    ...List.generate(
-      14,
-      (index) => OrderItem(
-        name: 'Pesanan #${index + 3}',
-        date: DateTime(2025, 10, 20 + index),
-        time: '10:00 - 11:00',
-        courts: 'Lapangan 1',
-        bookingId: '#WEB-${index + 3}',
-        amount: 85000,
-        status: index.isEven ? 'Confirmed' : 'Cancelled',
-      ),
-    ),
-  ];
-
-  // State untuk menyimpan status checkbox setiap item
-  late List<bool> _selectedItems;
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedItems = List<bool>.filled(_allOrders.length, false);
-  }
-
-  // LOGIKA: Fungsi untuk menampilkan Date Picker
   Future<void> _selectDate(BuildContext context, bool isStart) async {
     final DateTime? picked = await showDatePicker(
       context: context,
@@ -104,170 +39,411 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
     }
   }
 
-  // LOGIKA: Fungsi saat Checkbox "Pilih Semua" diklik
-  void _toggleSelectAll(bool? value) {
-    if (value != null) {
-      setState(() {
-        _selectAll = value;
-        _selectedItems = List<bool>.filled(_allOrders.length, value);
-      });
-    }
+  void _clearFilters() {
+    setState(() {
+      _startDate = null;
+      _endDate = null;
+      _selectedOrderIds.clear();
+      _filterStatus = 'Semua';
+    });
   }
 
-  // LOGIKA: Fungsi saat Checkbox item individual diklik
-  void _toggleItemSelection(int index, bool? value) {
-    if (value != null) {
-      setState(() {
-        _selectedItems[index] = value;
-        if (!value) {
-          _selectAll = false;
-        } else if (_selectedItems.every((element) => element)) {
-          _selectAll = true;
-        }
-      });
+  void _bulkUpdateStatus(String newStatus) async {
+    if (_selectedOrderIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pilih minimal satu pesanan!')),
+      );
+      return;
     }
-  }
 
-  // LOGIKA: Fungsi Export
-  void _exportData() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Mengekspor 16 data pesanan...')),
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Konfirmasi'),
+        content: Text(
+          'Update status ke "$newStatus" untuk ${_selectedOrderIds.length} pesanan?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              try {
+                await _firestoreService.bulkUpdateOrderStatus(
+                  _selectedOrderIds.toList(),
+                  newStatus,
+                );
+                if (mounted) {
+                  Navigator.pop(context);
+                  setState(() => _selectedOrderIds.clear());
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('✅ Status berhasil diperbarui!'),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
+                }
+              }
+            },
+            child: const Text('Update'),
+          ),
+        ],
+      ),
     );
   }
 
-  // Fungsi untuk format Rupiah sederhana
-  String _formatRupiah(int amount) {
-    // Menggunakan NumberFormat untuk format Rupiah yang benar
-    final formatter = NumberFormat.currency(
-      locale: 'id_ID',
-      symbol: 'Rp ',
-      decimalDigits: 0,
+  Future<void> _deleteOrder(String docId, String orderId) async {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Hapus Pesanan'),
+        content: Text(
+          'Yakin ingin menghapus pesanan $orderId?\n\nTindakan ini tidak dapat dibatalkan!',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              try {
+                await _firestoreService.deleteOrder(docId);
+                if (mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('✅ Pesanan berhasil dihapus!'),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Hapus', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
     );
-    return formatter.format(amount).replaceAll(',', '.');
+  }
+
+  Future<void> _exportToCSV(List<DocumentSnapshot> orders) async {
+    try {
+      // CSV Headers
+      final headers = [
+        'No',
+        'Order ID',
+        'Nama Customer',
+        'No. Telepon',
+        'Status',
+        'Tanggal',
+        'Total (Rp)',
+        'Sumber',
+      ];
+      final rows = <List<String>>[];
+
+      // CSV Data
+      for (int i = 0; i < orders.length; i++) {
+        final data = orders[i].data() as Map<String, dynamic>;
+        final createdAt = data['createdAt'] is Timestamp
+            ? (data['createdAt'] as Timestamp).toDate()
+            : DateTime.now();
+
+        rows.add([
+          (i + 1).toString(),
+          data['orderId'] ?? 'N/A',
+          data['customerName'] ?? 'N/A',
+          data['customerPhone'] ?? 'N/A',
+          data['status'] ?? 'N/A',
+          DateFormat('dd/MM/yyyy HH:mm').format(createdAt),
+          (data['totalPrice'] ?? 0).toString(),
+          data['source'] ?? 'mobile_app',
+        ]);
+      }
+
+      // Build CSV String
+      final csv = StringBuffer();
+      csv.writeln(headers.join(','));
+      for (final row in rows) {
+        csv.writeln(row.map((cell) => '\"$cell\"').join(','));
+      }
+
+      final csvContent = csv.toString();
+      final bytes = utf8.encode(csvContent);
+      final blob = html.Blob([bytes], 'text/csv;charset=utf-8');
+      final url = html.Url.createObjectUrlFromBlob(blob);
+
+      // Create and click download link
+      (html.AnchorElement(href: url)..setAttribute(
+            'download',
+            'export_pesanan_${DateFormat('yyyy-MM-dd_HHmm').format(DateTime.now())}.csv',
+          ))
+          .click();
+
+      // Cleanup
+      html.Url.revokeObjectUrl(url);
+
+      // Show success message
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ Export CSV berhasil! ${orders.length} pesanan diunduh',
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('❌ Error export: $e')));
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final int selectedCount = _selectedItems.where((element) => element).length;
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Administrasi'),
+        title: const Text('Riwayat Pesanan'),
         backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
       ),
-      // MENGHILANGKAN AdminDrawerPlaceholder dan menggantinya dengan Drawer aslinya
-      // Asumsi AdminDrawer sudah tersedia via import di file lain atau di sini.
-      // Jika AdminDrawer tidak tersedia di sini, Anda harus memasukkannya.
       body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // EXPORT BUTTON
           Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Riwayat Pesanan',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                ),
-                // Tombol Export
-                ElevatedButton.icon(
-                  onPressed: _exportData,
-                  icon: const Icon(Icons.download, size: 18),
-                  label: Text('Export (${_allOrders.length})'),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: StreamBuilder<QuerySnapshot>(
+              stream: _filterStatus == 'Semua'
+                  ? _firestoreService.getOrdersStream()
+                  : _firestoreService.getBookingsByStatus(_filterStatus),
+              builder: (context, snapshot) {
+                final canExport =
+                    snapshot.hasData &&
+                    (snapshot.data?.docs.isNotEmpty ?? false);
+                return ElevatedButton.icon(
+                  onPressed: canExport
+                      ? () => _exportToCSV(snapshot.data!.docs)
+                      : null,
+                  icon: const Icon(Icons.download),
+                  label: const Text('📥 Export ke CSV'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey.shade100,
-                    foregroundColor: Colors.black87,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
+                    backgroundColor: Colors.orange,
+                    foregroundColor: Colors.white,
                   ),
-                ),
-              ],
+                );
+              },
             ),
           ),
-
-          // --- FILTER PERIODE ---
+          // FILTER SECTION
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'Filter Periode',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+                  'Filter Pesanan',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                 ),
-                const SizedBox(height: 10),
-                // Input Tanggal Mulai
-                _buildDateField(
-                  'Dari Tanggal',
-                  _startDate,
-                  (date) => _selectDate(context, true),
+                const SizedBox(height: 12),
+                // Status Filter
+                DropdownButton<String>(
+                  value: _filterStatus,
+                  isExpanded: true,
+                  items:
+                      [
+                            'Semua',
+                            'Pending',
+                            'Confirmed',
+                            'Completed',
+                            'Cancelled',
+                          ]
+                          .map(
+                            (status) => DropdownMenuItem(
+                              value: status,
+                              child: Text(status),
+                            ),
+                          )
+                          .toList(),
+                  onChanged: (value) =>
+                      setState(() => _filterStatus = value ?? 'Semua'),
                 ),
-                const SizedBox(height: 10),
-                // Input Tanggal Akhir
-                _buildDateField(
-                  'Sampai Tanggal',
-                  _endDate,
-                  (date) => _selectDate(context, false),
+                const SizedBox(height: 12),
+                // Date Range
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () => _selectDate(context, true),
+                        icon: const Icon(Icons.calendar_today, size: 16),
+                        label: Text(
+                          _startDate == null
+                              ? 'Dari'
+                              : DateFormat('dd/MM/yyyy').format(_startDate!),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () => _selectDate(context, false),
+                        icon: const Icon(Icons.calendar_today, size: 16),
+                        label: Text(
+                          _endDate == null
+                              ? 'Sampai'
+                              : DateFormat('dd/MM/yyyy').format(_endDate!),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton.icon(
+                      onPressed: _clearFilters,
+                      icon: const Icon(Icons.clear, size: 16),
+                      label: const Text('Reset'),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 15),
-                // Tombol Filter
-                ElevatedButton(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Menerapkan filter...')),
+              ],
+            ),
+          ),
+          // BULK ACTION BUTTONS
+          if (_selectedOrderIds.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () => _bulkUpdateStatus('Confirmed'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                      ),
+                      child: const Text(
+                        '✓ Konfirmasi',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () => _bulkUpdateStatus('Cancelled'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red,
+                      ),
+                      child: const Text(
+                        '✕ Batalkan',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 8),
+          // ORDERS LIST
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: _filterStatus == 'Semua'
+                  ? _firestoreService.getOrdersStream()
+                  : _firestoreService.getBookingsByStatus(_filterStatus),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.error_outline,
+                          size: 48,
+                          color: Colors.red,
+                        ),
+                        const SizedBox(height: 16),
+                        Text('Error: ${snapshot.error}'),
+                      ],
+                    ),
+                  );
+                }
+
+                final docs = snapshot.data?.docs ?? [];
+                final filteredDocs = _startDate != null && _endDate != null
+                    ? docs.where((doc) {
+                        final data = doc.data() as Map<String, dynamic>;
+                        final createdAt = data['createdAt'] is Timestamp
+                            ? (data['createdAt'] as Timestamp).toDate()
+                            : DateTime.now();
+                        return createdAt.isAfter(_startDate!) &&
+                            createdAt.isBefore(
+                              _endDate!.add(const Duration(days: 1)),
+                            );
+                      }).toList()
+                    : docs;
+
+                if (filteredDocs.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.search_off,
+                          size: 48,
+                          color: Colors.grey[400],
+                        ),
+                        const SizedBox(height: 16),
+                        const Text('Tidak ada pesanan'),
+                      ],
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  itemCount: filteredDocs.length,
+                  itemBuilder: (context, index) {
+                    final doc = filteredDocs[index];
+                    final data = doc.data() as Map<String, dynamic>;
+                    final orderId = data['orderId'] as String;
+                    final isSelected = _selectedOrderIds.contains(orderId);
+
+                    return AdminOrderCard(
+                      docId: doc.id,
+                      data: data,
+                      isSelected: isSelected,
+                      onSelect: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _selectedOrderIds.add(orderId);
+                          } else {
+                            _selectedOrderIds.remove(orderId);
+                          }
+                        });
+                      },
+                      onDelete: (docId, orderId) =>
+                          _deleteOrder(docId, orderId),
                     );
                   },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size.fromHeight(50),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('Filter'),
-                ),
-                const SizedBox(height: 20),
-              ],
-            ),
-          ),
-
-          // --- PILIH SEMUA & DAFTAR PESANAN ---
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Row(
-              children: [
-                Checkbox(value: _selectAll, onChanged: _toggleSelectAll),
-                Text('Pilih Semua (${_allOrders.length})'),
-                if (selectedCount > 0)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 10),
-                    child: Text(
-                      '($selectedCount dipilih)',
-                      style: const TextStyle(color: Colors.blue),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              itemCount: _allOrders.length,
-              itemBuilder: (context, index) {
-                final order = _allOrders[index];
-                final isSelected = _selectedItems[index];
-
-                return OrderHistoryCard(
-                  order: order,
-                  isSelected: isSelected,
-                  onSelect: (value) => _toggleItemSelection(index, value),
-                  formatRupiah: _formatRupiah,
                 );
               },
             ),
@@ -276,189 +452,106 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
       ),
     );
   }
-
-  // Widget Pembantu untuk Input Tanggal
-  Widget _buildDateField(
-    String label,
-    DateTime? date,
-    ValueChanged<DateTime?> onTap,
-  ) {
-    final dateString = date != null
-        ? DateFormat('dd/MM/yyyy').format(date)
-        : 'dd/mm/yyyy';
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        GestureDetector(
-          onTap: () => onTap(date),
-          child: Container(
-            height: 50,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey.shade400),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  dateString,
-                  style: TextStyle(
-                    color: date != null ? Colors.black87 : Colors.grey,
-                  ),
-                ),
-                const Icon(Icons.calendar_month),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
 }
 
-// --- Komponen Riwayat Pesanan Card ---
-class OrderHistoryCard extends StatelessWidget {
-  final OrderItem order;
+class AdminOrderCard extends StatelessWidget {
+  final String docId;
+  final Map<String, dynamic> data;
   final bool isSelected;
-  final ValueChanged<bool?> onSelect;
-  final String Function(int) formatRupiah;
+  final Function(bool) onSelect;
+  final Function(String, String) onDelete;
 
-  const OrderHistoryCard({
-    super.key,
-    required this.order,
+  const AdminOrderCard({
+    required this.docId,
+    required this.data,
     required this.isSelected,
     required this.onSelect,
-    required this.formatRupiah,
+    required this.onDelete,
   });
+
+  String _getStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'pending':
+        return '🟡';
+      case 'confirmed':
+        return '🟢';
+      case 'completed':
+        return '🔵';
+      case 'cancelled':
+        return '🔴';
+      default:
+        return '⚪';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final orderId = data['orderId'] ?? 'N/A';
+    final name = data['customerName'] ?? 'Unknown';
+    final status = data['status'] ?? 'Unknown';
+    final total = data['totalPrice'] ?? 0;
+    final createdAt = data['createdAt'] is Timestamp
+        ? (data['createdAt'] as Timestamp).toDate()
+        : DateTime.now();
+
     return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: Colors.grey.shade300),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.only(right: 16.0),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Checkbox(value: isSelected, onChanged: onSelect),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Stack(
+        children: [
+          CheckboxListTile(
+            value: isSelected,
+            onChanged: (value) => onSelect(value ?? false),
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          order.name,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                        // Status Chip
-                        StatusChip(status: order.status),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-
-                    // Detail Booking
-                    Text(
-                      // Format Tanggal menggunakan locale id_ID (yang memicu error Anda)
-                      '${DateFormat('EEEE, d MMMM yyyy', 'id_ID').format(order.date)}',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.access_time,
-                          size: 14,
-                          color: Colors.grey,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          order.time,
-                          style: const TextStyle(color: Colors.grey),
-                        ),
-                        const SizedBox(width: 10),
-                        const Icon(Icons.person, size: 14, color: Colors.grey),
-                        const SizedBox(width: 4),
-                        Text(
-                          'Lapangan: ${order.courts}',
-                          style: const TextStyle(color: Colors.grey),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-
-                    // ID dan Harga
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          order.bookingId,
-                          style: const TextStyle(color: Colors.blue),
-                        ),
-                        Text(
-                          formatRupiah(order.amount),
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.green.shade700,
-                          ),
-                        ),
-                      ],
+                    Text(_getStatusColor(status)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        name,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ],
                 ),
-              ),
+                const SizedBox(height: 4),
+                Text(
+                  orderId,
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ],
             ),
-          ],
-        ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 4),
+                Text(DateFormat('dd/MM/yyyy HH:mm').format(createdAt)),
+                Text(
+                  'Rp ${NumberFormat('#,###').format(total)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.green,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Delete Button
+          Positioned(
+            right: 8,
+            top: 8,
+            child: IconButton(
+              icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+              onPressed: () => onDelete(docId, orderId),
+              tooltip: 'Hapus pesanan',
+            ),
+          ),
+        ],
       ),
-    );
-  }
-}
-
-// Komponen Pembantu untuk Status Chip (HARUS ADA DI FILE INI)
-class StatusChip extends StatelessWidget {
-  final String status;
-
-  const StatusChip({super.key, required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    Color color;
-    switch (status) {
-      case 'Confirmed':
-        color = Colors.green.shade500;
-        break;
-      case 'Pending':
-        color = Colors.yellow.shade700;
-        break;
-      case 'Cancelled':
-        color = Colors.red.shade500;
-        break;
-      default:
-        color = Colors.grey.shade500;
-    }
-
-    return Chip(
-      label: Text(
-        status,
-        style: const TextStyle(color: Colors.white, fontSize: 12),
-      ),
-      backgroundColor: color,
-      padding: EdgeInsets.zero,
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
     );
   }
 }

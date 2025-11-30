@@ -1,5 +1,12 @@
+import 'dart:io'; // Untuk Mobile
+import 'package:flutter/foundation.dart'; // Untuk kIsWeb
 import 'package:flutter/material.dart';
-import '../models/booking_data.dart'; // pastikan path ini benar
+import 'package:intl/intl.dart';
+import 'package:intl/date_symbol_data_local.dart';
+import 'package:image_picker/image_picker.dart';
+// Hapus import cloud_firestore karena kita akan pakai lewat service
+import '../models/booking_data.dart';
+import '../services/firestore_service.dart';
 
 class PaymentConfirmationScreen extends StatefulWidget {
   final BookingData bookingData;
@@ -16,504 +23,350 @@ class _PaymentConfirmationScreenState extends State<PaymentConfirmationScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
 
-  String? _uploadedFileName;
+  // Gunakan XFile agar konsisten dengan Service baru & Web
+  XFile? _selectedImage;
+  final ImagePicker _picker = ImagePicker();
 
-  // Data booking
-  late String _lapangan;
-  late String _date;
-  late String _time;
-  late int _totalJam;
-  late String _totalPembayaran;
+  bool _isLoading = false;
 
   final String _bankName = 'Bank Mandiri';
   final String _accountNumber = '1520016356871';
 
+  final Map<String, Map<String, List<String>>> _groupedSlots = {};
+
   @override
   void initState() {
     super.initState();
-
-    _lapangan = widget.bookingData.courtName;
-    _totalJam = widget.bookingData.selectedTimes.length;
-    _time = widget.bookingData.selectedTimes.join(' | ');
-
-    _date =
-        '${widget.bookingData.selectedDate.day}/${widget.bookingData.selectedDate.month}/${widget.bookingData.selectedDate.year}';
-
-    // totalCost = 85 → tampil: Rp 85.000,-
-    _totalPembayaran = 'Rp ${widget.bookingData.totalCost}.000,-';
+    initializeDateFormatting('id_ID', null);
+    print(
+      '📦 PaymentConfirmationScreen initialized with ${widget.bookingData.slots.length} slots',
+    );
+    _groupSlotsForDisplay();
   }
 
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _phoneController.dispose();
-    super.dispose();
+  void _groupSlotsForDisplay() {
+    try {
+      // Validasi data
+      if (widget.bookingData.slots.isEmpty) {
+        print('⚠️ Tidak ada slot yang dipilih!');
+        return;
+      }
+
+      print(
+        '🔄 Mengelompokkan ${widget.bookingData.slots.length} slots untuk tampilan...',
+      );
+
+      for (var slot in widget.bookingData.slots) {
+        // Validasi setiap slot
+        if (slot.courtName.isEmpty) {
+          print('❌ Slot dengan courtName kosong ditemukan!');
+          continue;
+        }
+
+        if (slot.time.isEmpty) {
+          print(
+            '❌ Slot dengan time kosong ditemukan untuk court: ${slot.courtName}',
+          );
+          continue;
+        }
+
+        String dateStr = DateFormat(
+          'EEEE, d MMMM yyyy',
+          'id_ID',
+        ).format(slot.date);
+
+        // Pisahkan waktu dengan aman
+        String timeSimple = slot.time.split(' - ')[0].trim();
+
+        print('✅ Slot: Court=$slot.courtName, Date=$dateStr, Time=$timeSimple');
+
+        if (!_groupedSlots.containsKey(slot.courtName)) {
+          _groupedSlots[slot.courtName] = {};
+        }
+
+        if (!_groupedSlots[slot.courtName]!.containsKey(dateStr)) {
+          _groupedSlots[slot.courtName]![dateStr] = [];
+        }
+
+        _groupedSlots[slot.courtName]![dateStr]!.add(timeSimple);
+      }
+
+      // Sort times untuk setiap date
+      _groupedSlots.forEach((court, dates) {
+        dates.forEach((date, times) {
+          times.sort();
+        });
+      });
+
+      print(
+        '✅ Pengelompokan selesai. Total courts: ${_groupedSlots.keys.length}',
+      );
+    } catch (e, stackTrace) {
+      print('❌ ERROR dalam _groupSlotsForDisplay: $e');
+      print('Stack Trace: $stackTrace');
+    }
   }
 
-  void _pickFile() {
-    setState(() {
-      _uploadedFileName =
-          'bukti_transfer_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    });
+  // FUNGSI PILIH GAMBAR (AMAN WEB/MOBILE)
+  Future<void> _pickImage() async {
+    try {
+      final XFile? pickedFile = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 50,
+        maxWidth: 800,
+      );
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('File dipilih: $_uploadedFileName')));
+      if (pickedFile != null) {
+        setState(() {
+          _selectedImage = pickedFile;
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Gagal mengambil gambar: $e')));
+    }
   }
 
-  void _submitPayment() {
-    if (!_formKey.currentState!.validate()) return;
+  // FUNGSI SUBMIT (UPLOAD + SAVE VIA SERVICE)
+  Future<void> _submitPayment() async {
+    print('🔍 Memulai validasi form...');
 
-    if (_uploadedFileName == null) {
+    if (!_formKey.currentState!.validate()) {
+      print('❌ Form validation gagal');
+      return;
+    }
+
+    if (_selectedImage == null) {
+      print('❌ Tidak ada gambar yang dipilih');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Mohon unggah bukti pembayaran.')),
       );
       return;
     }
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const PaymentSuccessScreen()),
-    );
+    // Validasi data booking
+    if (widget.bookingData.slots.isEmpty) {
+      print('❌ Slots kosong!');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Tidak ada slot yang dipilih. Mohon kembali dan pilih slot.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    print('📋 Nama: ${_nameController.text}');
+    print('📋 Phone: ${_phoneController.text}');
+    print('📦 Total Slots: ${widget.bookingData.slots.length}');
+    print('💰 Total Cost: ${widget.bookingData.totalCost}');
+
+    setState(() => _isLoading = true);
+
+    try {
+      // 1. Upload Gambar via Service
+      print('🚀 Mengupload bukti pembayaran...');
+      String fileName = 'bukti_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      String proofUrl = await FirestoreService().uploadProof(
+        _selectedImage!,
+        fileName,
+      );
+      print("✅ Bukti pembayaran berhasil diupload: $proofUrl");
+
+      // 2. Siapkan Data Booking
+      String orderId = 'APP-${DateTime.now().millisecondsSinceEpoch}';
+      print("📋 Order ID: $orderId");
+      print('📦 Grouped Slots: $_groupedSlots');
+
+      List<Map<String, dynamic>> bookingsPayload = [];
+
+      // Validasi _groupedSlots tidak kosong
+      if (_groupedSlots.isEmpty) {
+        print('❌ _groupedSlots kosong! Ini adalah masalah data.');
+        throw Exception(
+          'Data slot tidak dapat diproses. Silakan kembali ke halaman booking dan pilih slot lagi.',
+        );
+      }
+
+      // Gunakan for loop biasa untuk kontrol error yang lebih baik
+      for (String courtName in _groupedSlots.keys) {
+        List<Map<String, String>> slotsPayload = [];
+        Map<String, List<String>> datesMap = _groupedSlots[courtName]!;
+
+        for (String dateStr in datesMap.keys) {
+          List<String> timesList = datesMap[dateStr]!;
+
+          for (String tSimple in timesList) {
+            try {
+              // Cari slot asli untuk mendapatkan time lengkap "06:00 - 07:00"
+              final matchingSlots = widget.bookingData.slots
+                  .where(
+                    (s) =>
+                        s.courtName == courtName &&
+                        DateFormat(
+                              'EEEE, d MMMM yyyy',
+                              'id_ID',
+                            ).format(s.date) ==
+                            dateStr &&
+                        s.time.startsWith(tSimple),
+                  )
+                  .toList();
+
+              if (matchingSlots.isNotEmpty) {
+                slotsPayload.add({
+                  'date': dateStr,
+                  'time': matchingSlots.first.time,
+                });
+                print(
+                  "✅ Slot ditemukan: Court=$courtName, Date=$dateStr, Time=${matchingSlots.first.time}",
+                );
+              } else {
+                // Fallback: gunakan time sederhana
+                slotsPayload.add({'date': dateStr, 'time': tSimple});
+                print(
+                  "⚠️ Slot tidak ditemukan (menggunakan fallback): Court=$courtName, Date=$dateStr, Time=$tSimple",
+                );
+              }
+            } catch (e) {
+              print(
+                "❌ Error saat mencari slot: Court=$courtName, Date=$dateStr, Time=$tSimple, Error=$e",
+              );
+              slotsPayload.add({'date': dateStr, 'time': tSimple});
+            }
+          }
+        }
+
+        if (slotsPayload.isNotEmpty) {
+          bookingsPayload.add({'court': courtName, 'slots': slotsPayload});
+        }
+      }
+
+      if (bookingsPayload.isEmpty) {
+        print('❌ bookingsPayload kosong!');
+        throw Exception('Gagal memproses data booking. Silakan coba lagi.');
+      }
+
+      print("📦 Booking Payload: $bookingsPayload");
+
+      // 3. Simpan ke Firestore
+      print('💾 Menyimpan ke Firestore...');
+      await FirestoreService().addBooking(
+        orderId: orderId,
+        customerName: _nameController.text,
+        customerPhone: _phoneController.text,
+        totalPrice: widget.bookingData.totalCost,
+        proofUrl: proofUrl,
+        bookings: bookingsPayload,
+      );
+
+      print('✅ Data berhasil disimpan ke Firestore!');
+
+      if (mounted) {
+        setState(() => _isLoading = false);
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const PaymentSuccessScreen()),
+        );
+      }
+    } catch (e, stackTrace) {
+      print("❌ ERROR SUBMIT PAYMENT: $e");
+      print("Stack Trace: $stackTrace");
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Gagal memproses pesanan: $e')));
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    String totalStr = NumberFormat.currency(
+      locale: 'id_ID',
+      symbol: 'Rp ',
+      decimalDigits: 0,
+    ).format(widget.bookingData.totalCost);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Konfirmasi Pembayaran',
-          style: TextStyle(fontWeight: FontWeight.bold),
+        title: const Text("Konfirmasi Pembayaran"),
+        elevation: 0.5,
+      ),
+
+      bottomNavigationBar: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+        decoration: BoxDecoration(
+          color: Colors.blue.shade50,
+          border: Border(top: BorderSide(color: Colors.blue.shade100)),
         ),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.only(bottom: 80),
-        child: Column(
-          children: [
-            _buildOrderSummary(),
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SectionHeader(
-                      icon: Icons.credit_card,
-                      title: 'Detail & Pembayaran',
-                    ),
-                    const SizedBox(height: 15),
-
-                    _buildTextFormField(
-                      icon: Icons.person_outline,
-                      label: 'Nama Lengkap',
-                      hint: 'Nama lengkap untuk notifikasi',
-                      controller: _nameController,
-                      validator: (v) =>
-                          v == null || v.isEmpty ? 'Nama wajib diisi.' : null,
-                    ),
-                    const SizedBox(height: 15),
-
-                    _buildTextFormField(
-                      icon: Icons.phone_android,
-                      label: 'Nomor Telepon (WA)',
-                      hint: 'Nomor WA aktif',
-                      controller: _phoneController,
-                      keyboardType: TextInputType.phone,
-                      validator: (v) => v == null || v.isEmpty
-                          ? 'Nomor telepon wajib diisi.'
-                          : null,
-                    ),
-                    const SizedBox(height: 30),
-
-                    const SectionHeader(
-                      icon: Icons.receipt_long,
-                      title: 'Transfer & Bukti',
-                    ),
-                    const SizedBox(height: 15),
-
-                    _buildBankTransferInfo(),
-                    const SizedBox(height: 20),
-
-                    _buildFileUploadSection(),
-                    const SizedBox(height: 30),
-
-                    ElevatedButton.icon(
-                      onPressed: _submitPayment,
-                      icon: const Icon(Icons.check_circle_outline),
-                      label: const Text('Selesaikan Pembayaran'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.teal,
-                        foregroundColor: Colors.white,
-                        minimumSize: const Size.fromHeight(50),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-      bottomNavigationBar: const MyBottomNavBar(),
-    );
-  }
-
-  // --- WIDGET ---
-  Widget _buildOrderSummary() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: const BoxDecoration(
-        color: Colors.deepPurple,
-        borderRadius: BorderRadius.vertical(bottom: Radius.circular(25)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Align(
-            alignment: Alignment.topRight,
-            child: Chip(
-              label: Text(
-                'TOTAL JAM: $_totalJam',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
-                ),
-              ),
-              backgroundColor: Colors.white24,
-              labelStyle: const TextStyle(color: Colors.white),
-            ),
-          ),
-          const Text(
-            'RINGKASAN PESANAN',
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 18,
-            ),
-          ),
-          const Divider(color: Colors.white54, height: 20),
-
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.deepPurple.shade700,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Chip(
-                  label: Text(_lapangan),
-                  backgroundColor: Colors.yellow.shade100,
-                ),
-                const SizedBox(height: 8),
-
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.calendar_month,
-                      color: Colors.white70,
-                      size: 18,
-                    ),
-                    const SizedBox(width: 5),
-                    Text(_date, style: const TextStyle(color: Colors.white70)),
-                  ],
-                ),
-                const SizedBox(height: 5),
-
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.access_time,
-                      color: Colors.white70,
-                      size: 18,
-                    ),
-                    const SizedBox(width: 5),
-                    Text(_time, style: const TextStyle(color: Colors.white70)),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-
-          Row(
+        child: SafeArea(
+          child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
-                'TOTAL\nPEMBAYARAN',
-                style: TextStyle(color: Colors.white70, fontSize: 14),
+              Text(
+                "Grand Total:",
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                  color: Colors.blue.shade900,
+                ),
               ),
               Text(
-                _totalPembayaran,
-                style: const TextStyle(
-                  color: Colors.white,
+                totalStr,
+                style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  fontSize: 30,
+                  fontSize: 20,
+                  color: Colors.blue.shade900,
                 ),
               ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTextFormField({
-    required IconData icon,
-    required String label,
-    required String hint,
-    required TextEditingController controller,
-    required FormFieldValidator<String> validator,
-    TextInputType keyboardType = TextInputType.text,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(icon, size: 18, color: Colors.grey.shade700),
-            const SizedBox(width: 5),
-            Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
-          ],
-        ),
-        const SizedBox(height: 8),
-        TextFormField(
-          controller: controller,
-          keyboardType: keyboardType,
-          validator: validator,
-          decoration: const InputDecoration(
-            hintText: '',
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.all(Radius.circular(8)),
-            ),
-            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBankTransferInfo() {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.account_balance, color: Colors.blue, size: 20),
-                const SizedBox(width: 5),
-                Text(
-                  'Transfer Bank - $_bankName',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-
-            Text(
-              'Transfer $_totalPembayaran ke:',
-              style: const TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 5),
-
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(5),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: SelectableText(
-                _accountNumber,
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                  color: Colors.blue,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 5),
-            const Text(
-              'a.n. BKK PLN AREA MAKASSAR SELATAN',
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-          ],
         ),
       ),
-    );
-  }
 
-  Widget _buildFileUploadSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.upload_file, size: 18, color: Colors.grey),
-            const SizedBox(width: 5),
-            const Text(
-              'Upload Bukti Transfer',
-              style: TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-
-        InkWell(
-          onTap: _pickFile,
-          child: Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey.shade400),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Center(
-              child: Column(
-                children: [
-                  const Icon(
-                    Icons.cloud_upload_outlined,
-                    size: 40,
-                    color: Colors.blue,
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    _uploadedFileName ?? 'Unggah Bukti Pembayaran (Max 2MB)',
-                    style: TextStyle(
-                      color: _uploadedFileName != null
-                          ? Colors.black
-                          : Colors.blue,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// --- Section Header ---
-class SectionHeader extends StatelessWidget {
-  final IconData icon;
-  final String title;
-
-  const SectionHeader({super.key, required this.icon, required this.title});
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      title,
-      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-    );
-  }
-}
-
-// --- Bottom NavBar ---
-class MyBottomNavBar extends StatelessWidget {
-  const MyBottomNavBar({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return BottomNavigationBar(
-      items: const [
-        BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
-        BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
-        BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profile'),
-      ],
-      currentIndex: 0,
-      selectedItemColor: Colors.blue,
-      onTap: (index) {},
-    );
-  }
-}
-
-// --- Success Screen ---
-class PaymentSuccessScreen extends StatelessWidget {
-  const PaymentSuccessScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Pembayaran Berhasil')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
+      body: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.check_circle, color: Colors.green, size: 100),
-              const SizedBox(height: 20),
+              ..._groupedSlots.entries.map((entry) {
+                return _buildCourtCard(entry.key, entry.value);
+              }),
 
-              const Text(
-                'Pesanan Berhasil Dibuat!',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-              ),
+              const SizedBox(height: 24),
 
+              const SectionHeader(icon: Icons.person, title: 'Data Pemesan'),
               const SizedBox(height: 10),
-              const Text(
-                'Terima kasih! Bukti pembayaran telah kami terima. Status pesanan akan diperbarui setelah admin mengonfirmasi.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey),
+              _buildTextField(
+                "Nama Lengkap",
+                "Masukkan nama Anda",
+                _nameController,
               ),
+              const SizedBox(height: 10),
+              _buildTextField(
+                "Nomor WhatsApp",
+                "08xxxxxxxx",
+                _phoneController,
+                isNumber: true,
+              ),
+
+              const SizedBox(height: 24),
+
+              const SectionHeader(icon: Icons.payment, title: 'Pembayaran'),
+              const SizedBox(height: 10),
+              _buildBankInfo(),
+              const SizedBox(height: 16),
+
+              _buildUploadBox(),
 
               const SizedBox(height: 30),
 
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.green.shade50,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.green.shade300),
-                ),
-                child: Column(
-                  children: [
-                    const Icon(
-                      Icons.description,
-                      color: Colors.green,
-                      size: 30,
-                    ),
-                    const SizedBox(height: 10),
-                    const Text(
-                      'Bukti Pembayaran Diterima',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 5),
-                    const Text(
-                      'Total Pesanan:',
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                    const Text(
-                      'Rp 75.000,-',
-                      style: TextStyle(
-                        fontSize: 30,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.green,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 30),
-
-              ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.popUntil(context, (route) => route.isFirst);
-                },
-                icon: const Icon(Icons.home),
-                label: const Text('Kembali ke Halaman Utama'),
+              ElevatedButton(
+                onPressed: _isLoading ? null : _submitPayment,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.blue,
                   foregroundColor: Colors.white,
@@ -522,12 +375,347 @@ class PaymentSuccessScreen extends StatelessWidget {
                     borderRadius: BorderRadius.circular(12),
                   ),
                 ),
+                child: _isLoading
+                    ? Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: const [
+                          SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          ),
+                          SizedBox(width: 10),
+                          Text("Mengupload Bukti..."),
+                        ],
+                      )
+                    : const Text(
+                        "Konfirmasi & Kirim",
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
               ),
             ],
           ),
         ),
       ),
-      bottomNavigationBar: const MyBottomNavBar(),
+    );
+  }
+
+  // WIDGET PREVIEW GAMBAR (CROSS PLATFORM FIX)
+  Widget _buildUploadBox() {
+    return InkWell(
+      onTap: _pickImage,
+      child: Container(
+        width: double.infinity,
+        height: 150,
+        decoration: BoxDecoration(
+          color: Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: Colors.grey.shade300,
+            style: BorderStyle.solid,
+          ),
+        ),
+        child: _selectedImage != null
+            ? ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // LOGIC TAMPIL GAMBAR (WEB vs MOBILE)
+                    kIsWeb
+                        ? Image.network(
+                            _selectedImage!.path,
+                            fit: BoxFit.cover,
+                          ) // Web
+                        : Image.file(
+                            File(_selectedImage!.path),
+                            fit: BoxFit.cover,
+                          ), // Mobile
+
+                    Container(
+                      color: Colors.black38,
+                      child: const Center(
+                        child: Icon(Icons.edit, color: Colors.white, size: 30),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            : Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Icon(Icons.cloud_upload, color: Colors.grey, size: 40),
+                  SizedBox(height: 8),
+                  Text(
+                    "Ketuk untuk Upload Bukti Transfer",
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+
+  // --- Widget Helper Lainnya (Sama seperti sebelumnya) ---
+  Widget _buildCourtCard(String courtName, Map<String, List<String>> datesMap) {
+    int hoursCount = 0;
+    datesMap.forEach((_, times) => hoursCount += times.length);
+    int subTotal = hoursCount * 85000;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF8B5CF6), Color(0xFFA78BFA)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.purple.withOpacity(0.3),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  "Ringkasan Pesanan ($hoursCount Jam)",
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    courtName,
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(color: Colors.white24, height: 1),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: datesMap.entries.map((entry) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(
+                        Icons.calendar_today,
+                        color: Colors.white70,
+                        size: 16,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              entry.key,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.access_time,
+                                  color: Colors.white70,
+                                  size: 16,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  entry.value.join(", "),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+          const Divider(color: Colors.white24, height: 1),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text("Subtotal", style: TextStyle(color: Colors.white70)),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.local_offer,
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      NumberFormat.currency(
+                        locale: 'id_ID',
+                        symbol: 'Rp ',
+                        decimalDigits: 0,
+                      ).format(subTotal),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTextField(
+    String label,
+    String hint,
+    TextEditingController ctrl, {
+    bool isNumber = false,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        TextFormField(
+          controller: ctrl,
+          keyboardType: isNumber ? TextInputType.phone : TextInputType.text,
+          validator: (v) => v!.isEmpty ? "Wajib diisi" : null,
+          decoration: InputDecoration(
+            hintText: hint,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 12,
+            ),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBankInfo() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.account_balance, color: Colors.blue),
+              const SizedBox(width: 10),
+              Text(
+                _bankName,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _accountNumber,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1,
+            ),
+          ),
+          const Text(
+            "a.n. BKK PLN AREA MAKASSAR SELATAN",
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class SectionHeader extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  const SectionHeader({super.key, required this.icon, required this.title});
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, size: 20, color: Colors.blue),
+        const SizedBox(width: 8),
+        Text(
+          title,
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+      ],
+    );
+  }
+}
+
+class PaymentSuccessScreen extends StatelessWidget {
+  const PaymentSuccessScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.check_circle, color: Colors.green, size: 80),
+            const SizedBox(height: 20),
+            const Text(
+              "Pesanan Terkirim!",
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () =>
+                  Navigator.popUntil(context, (route) => route.isFirst),
+              child: const Text("Kembali ke Home"),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

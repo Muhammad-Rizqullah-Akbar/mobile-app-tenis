@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/firestore_service.dart';
 
 // --- Model Data Gambar Carousel ---
 class CarouselImage {
@@ -15,6 +16,14 @@ class CarouselImage {
     required this.altText,
     required this.order,
   });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'url': url,
+    'altText': altText,
+    'order': order,
+  };
 }
 
 // --- Admin Carousel Management Screen ---
@@ -26,29 +35,61 @@ class AdminCarouselScreen extends StatefulWidget {
 }
 
 class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
-  // ignore: prefer_final_fields
-  List<CarouselImage> _images = [
-    CarouselImage(id: 'img-1', name: 'Lapangan-img 1', url: 'https://firebase.storage.example.com/...', altText: 'Gambar Lapangan Tenis 1', order: 1),
-    CarouselImage(id: 'img-2', name: 'Lapangan img 2', url: 'https://firebase.storage.example.com/...', altText: 'Gambar Lapangan Tenis 2', order: 2),
-    CarouselImage(id: 'img-3', name: 'Lapangan img 3', url: 'https://firebase.storage.example.com/...', altText: 'Gambar Lapangan Tenis 3', order: 3),
-    CarouselImage(id: 'img-4', name: 'Lapangan img 4', url: 'https://firebase.storage.example.com/...', altText: 'Gambar Lapangan Tenis 4', order: 4),
-    CarouselImage(id: 'img-5', name: 'Lapangan img 5', url: 'https://firebase.storage.example.com/...', altText: 'Gambar Lapangan Tenis 5', order: 5),
-    CarouselImage(id: 'img-6', name: 'Lapngan img 6', url: 'https://firebase.storage.example.com/...', altText: 'Gambar Lapangan Tenis 6', order: 6),
-  ];
+  final FirestoreService _firestoreService = FirestoreService();
 
+  List<CarouselImage> _images = [];
   String? _fileName;
+  bool _isLoading = false;
   final TextEditingController _descriptionController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadImages();
+  }
+
+  Future<void> _loadImages() async {
+    try {
+      final stream = _firestoreService.getCarouselStream();
+      final snapshot = await stream.first;
+      if (mounted) {
+        final data = snapshot.data() as Map<String, dynamic>?;
+        final images = data?['images'] as List? ?? [];
+        setState(() {
+          _images = images
+              .map(
+                (img) => CarouselImage(
+                  id: img['id'] ?? '',
+                  name: img['name'] ?? '',
+                  url: img['url'] ?? '',
+                  altText: img['altText'] ?? '',
+                  order: img['order'] ?? 0,
+                ),
+              )
+              .toList();
+        });
+      }
+    } catch (e) {
+      print('❌ Error loading carousel images: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _descriptionController.dispose();
+    super.dispose();
+  }
 
   void _pickFile() {
     setState(() {
       _fileName = 'new_image_${_images.length + 1}.jpg';
     });
-
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('File dipilih: $_fileName')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('File dipilih: $_fileName')));
   }
 
-  void _uploadAndAdd() {
+  Future<void> _uploadAndAdd() async {
     if (_fileName == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Pilih file gambar terlebih dahulu!')),
@@ -56,57 +97,101 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
       return;
     }
 
-    final newImage = CarouselImage(
-      id: 'img-${_images.length + 1}',
-      name: 'Gambar Baru ${_images.length + 1}',
-      url: 'https://firebase.storage.example.com/new_upload.jpg',
-      altText: _descriptionController.text.isEmpty
-          ? 'Gambar Lapangan'
-          : _descriptionController.text,
-      order: _images.length + 1,
-    );
+    setState(() => _isLoading = true);
+    try {
+      final newImage = CarouselImage(
+        id: 'carousel_${DateTime.now().millisecondsSinceEpoch}',
+        name: _fileName!,
+        url: 'https://placeholder.com/400x300?text=${_fileName!}',
+        altText: _descriptionController.text.isEmpty
+            ? 'Gambar Lapangan'
+            : _descriptionController.text,
+        order: _images.length + 1,
+      );
 
-    setState(() {
-      _images.add(newImage);
-      _fileName = null;
-      _descriptionController.clear();
+      setState(() {
+        _images.add(newImage);
+        _images.sort((a, b) => a.order.compareTo(b.order));
+      });
 
-      _images.sort((a, b) => a.order.compareTo(b.order));
-    });
+      await _firestoreService.updateCarouselImages(
+        _images.map((i) => i.toJson()).toList(),
+      );
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Gambar berhasil diunggah dan ditambahkan!')),
-    );
-  }
-
-  void _deleteImage(String id) {
-    setState(() {
-      _images.removeWhere((img) => img.id == id);
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Gambar ID $id berhasil dihapus.')),
-    );
-  }
-
-  void _reorder(int oldIndex, int newIndex) {
-    setState(() {
-      if (newIndex > oldIndex) newIndex -= 1;
-
-      final item = _images.removeAt(oldIndex);
-      _images.insert(newIndex, item);
-
-      // Update order
-      for (int i = 0; i < _images.length; i++) {
-        _images[i] = CarouselImage(
-          id: _images[i].id,
-          name: _images[i].name,
-          url: _images[i].url,
-          altText: _images[i].altText,
-          order: i + 1,
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _fileName = null;
+          _descriptionController.clear();
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✅ Gambar berhasil diunggah!')),
         );
       }
-    });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
+      }
+    }
+  }
+
+  Future<void> _deleteImage(String id) async {
+    setState(() => _isLoading = true);
+    try {
+      setState(() => _images.removeWhere((img) => img.id == id));
+      await _firestoreService.updateCarouselImages(
+        _images.map((i) => i.toJson()).toList(),
+      );
+
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✅ Gambar berhasil dihapus!')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
+      }
+    }
+  }
+
+  Future<void> _reorder(int oldIndex, int newIndex) async {
+    setState(() => _isLoading = true);
+    try {
+      setState(() {
+        if (newIndex > oldIndex) newIndex -= 1;
+        final item = _images.removeAt(oldIndex);
+        _images.insert(newIndex, item);
+        for (int i = 0; i < _images.length; i++) {
+          _images[i] = CarouselImage(
+            id: _images[i].id,
+            name: _images[i].name,
+            url: _images[i].url,
+            altText: _images[i].altText,
+            order: i + 1,
+          );
+        }
+      });
+      await _firestoreService.updateCarouselImages(
+        _images.map((i) => i.toJson()).toList(),
+      );
+
+      if (mounted) setState(() => _isLoading = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
+      }
+    }
   }
 
   @override
@@ -117,53 +202,59 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
         backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
       ),
-      body: CustomScrollView(
-        slivers: [
-          SliverPadding(
-            padding: const EdgeInsets.all(16),
-            sliver: SliverList(
-              delegate: SliverChildListDelegate(
-                [
-                  const Text(
-                    'Manajemen Gambar Carousel',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 5),
-                  const Text(
-                    'Kelola gambar yang ditampilkan di halaman utama (carousel).',
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                  const SizedBox(height: 20),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : CustomScrollView(
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.all(16),
+                  sliver: SliverList(
+                    delegate: SliverChildListDelegate([
+                      const Text(
+                        'Manajemen Gambar Carousel',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      const Text(
+                        'Kelola gambar yang ditampilkan di halaman utama (carousel).',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                      const SizedBox(height: 20),
 
-                  _buildUploadSection(),
-                  const SizedBox(height: 30),
+                      _buildUploadSection(),
+                      const SizedBox(height: 30),
 
-                  Text(
-                    'Daftar Gambar (${_images.length})',
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      Text(
+                        'Daftar Gambar (${_images.length})',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Divider(height: 20),
+                    ]),
                   ),
-                  const Divider(height: 20),
-                ],
-              ),
+                ),
+
+                SliverReorderableList(
+                  itemCount: _images.length,
+                  onReorder: _reorder,
+                  itemBuilder: (context, index) {
+                    final image = _images[index];
+                    return CarouselImageCard(
+                      key: ValueKey(image.id),
+                      image: image,
+                      onDelete: () => _deleteImage(image.id),
+                    );
+                  },
+                ),
+
+                const SliverToBoxAdapter(child: SizedBox(height: 80)),
+              ],
             ),
-          ),
-
-          SliverReorderableList(
-            itemCount: _images.length,
-            onReorder: _reorder,
-            itemBuilder: (context, index) {
-              final image = _images[index];
-              return CarouselImageCard(
-                key: ValueKey(image.id),
-                image: image,
-                onDelete: () => _deleteImage(image.id),
-              );
-            },
-          ),
-
-          const SliverToBoxAdapter(child: SizedBox(height: 80)),
-        ],
-      ),
     );
   }
 
@@ -174,16 +265,16 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.1),
-            blurRadius: 5,
-          ),
+          BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 5),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Unggah Gambar Baru', style: TextStyle(fontWeight: FontWeight.bold)),
+          const Text(
+            'Unggah Gambar Baru',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
           const Divider(),
 
           Row(
@@ -230,7 +321,10 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.all(Radius.circular(8)),
               ),
-              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 12,
+              ),
               isDense: true,
             ),
           ),
@@ -292,7 +386,10 @@ class CarouselImageCard extends StatelessWidget {
               ],
             ),
           ),
-          title: Text(image.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+          title: Text(
+            image.name,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
           subtitle: Text(
             image.url,
             overflow: TextOverflow.ellipsis,

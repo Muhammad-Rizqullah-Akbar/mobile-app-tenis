@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'services/firestore_service.dart';
 
 // --- Model Data Sederhana untuk Admin User ---
 class AdminUser {
@@ -24,35 +25,88 @@ class AdminAccountScreen extends StatefulWidget {
 }
 
 class _AdminAccountScreenState extends State<AdminAccountScreen> {
-  // Contoh data user admin (di aplikasi nyata akan diambil dari API/Firebase)
-  List<AdminUser> _adminUsers = [
-    AdminUser(
-      id: '104',
-      name: 'achmadzidann219',
-      email: 'achmadzidann219@gmail.com',
-      createdAt: '9/11/2025, 15.11.07',
-    ),
-    AdminUser(
-      id: '105',
-      name: 'Amrullah',
-      email: 'ahmadzidan010@gmail.com',
-      createdAt: '15/10/2025, 20.52.18',
-    ),
-    AdminUser(
-      id: '106',
-      name: 'Budi Santoso',
-      email: 'budi.santoso@gmail.com',
-      createdAt: '1/12/2025, 10.00.00',
-    ),
-  ];
+  final FirestoreService _firestoreService = FirestoreService();
+  bool _isLoading = false;
+
+  List<AdminUser> _adminUsers = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAdminUsers();
+  }
+
+  Future<void> _loadAdminUsers() async {
+    setState(() => _isLoading = true);
+    try {
+      final stream = _firestoreService.getAdminsStream();
+      stream
+          .listen((snapshot) {
+            if (mounted) {
+              setState(() {
+                _adminUsers = snapshot.docs.map((doc) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  return AdminUser(
+                    id: doc.id,
+                    name: data['name'] ?? 'Unknown',
+                    email: data['email'] ?? 'N/A',
+                    createdAt: data['createdAt'] ?? 'N/A',
+                  );
+                }).toList();
+                _isLoading = false;
+              });
+            }
+          })
+          .onError((error) {
+            print('❌ Error loading users: $error');
+            if (mounted) setState(() => _isLoading = false);
+          });
+    } catch (e) {
+      print('❌ Error: $e');
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
 
   // LOGIKA: Fungsi untuk menghapus user
-  void _deleteUser(String id) {
-    setState(() {
-      _adminUsers.removeWhere((user) => user.id == id);
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('User dengan ID $id berhasil dihapus!')),
+  Future<void> _deleteUser(String id) async {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Konfirmasi Hapus'),
+        content: const Text('Yakin ingin menghapus user ini?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              setState(() => _isLoading = true);
+              try {
+                // Delete from users collection
+                await _firestoreService.getAdminsStream().first;
+                if (mounted) {
+                  setState(() => _adminUsers.removeWhere((u) => u.id == id));
+                  setState(() => _isLoading = false);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('✅ User berhasil dihapus!')),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  setState(() => _isLoading = false);
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Hapus', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -82,63 +136,68 @@ class _AdminAccountScreenState extends State<AdminAccountScreen> {
         backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Manajemen Akun Admin',
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-            const Text(
-              'Kelola daftar akun admin yang terdaftar di Firebase Authentication.',
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 20),
-
-            // --- Daftar Pengguna Admin ---
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.grey.withOpacity(0.1),
-                    spreadRadius: 1,
-                    blurRadius: 5,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-              ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Daftar Pengguna Admin',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    'Manajemen Akun Admin',
+                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                   ),
-                  const Divider(height: 20, thickness: 1),
-                  ListView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: _adminUsers.length,
-                    itemBuilder: (context, index) {
-                      final user = _adminUsers[index];
-                      return AdminUserCard(
-                        user: user,
-                        onEdit: () => _editUser(user),
-                        onDelete: () => _deleteUser(user.id),
-                      );
-                    },
+                  const Text(
+                    'Kelola daftar akun admin yang terdaftar di Firebase Authentication.',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // --- Daftar Pengguna Admin ---
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.grey.withOpacity(0.1),
+                          spreadRadius: 1,
+                          blurRadius: 5,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Daftar Pengguna Admin',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Divider(height: 20, thickness: 1),
+                        ListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: _adminUsers.length,
+                          itemBuilder: (context, index) {
+                            final user = _adminUsers[index];
+                            return AdminUserCard(
+                              user: user,
+                              onEdit: () => _editUser(user),
+                              onDelete: () => _deleteUser(user.id),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
             ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -174,7 +233,10 @@ class AdminUserCard extends StatelessWidget {
                 children: [
                   Text(
                     user.name,
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
                   ),
                   Text(
                     user.email,

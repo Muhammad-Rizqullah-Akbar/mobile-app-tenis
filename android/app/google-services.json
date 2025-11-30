@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "799155321879",
+    "project_id": "smiles-alpha",
+    "storage_bucket": "smiles-alpha.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:799155321879:android:6579d89177660b08d17052",
+        "android_client_info": {
+          "package_name": "com.example.booking_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCamwxRWSTFMxQVdikU3y_1aq57pMJT64g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
