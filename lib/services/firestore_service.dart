@@ -18,7 +18,7 @@ class FirestoreService {
   // 1. BAGIAN ORDERS (PESANAN)
   // ===========================================================================
 
-  // CREATE: Tambah Booking Baru (Support Multi-Booking)
+  // CREATE: Tambah Booking Baru
   Future<void> addBooking({
     required String orderId,
     required String customerName,
@@ -47,62 +47,56 @@ class FirestoreService {
     }
   }
 
-  // FUNGSI UPLOAD (DENGAN "JARING PENGAMAN")
+  // FUNGSI UPLOAD BUKTI BAYAR
   Future<String> uploadProof(XFile file, String fileName) async {
     try {
       print("🚀 Mencoba upload gambar ke Storage...");
-
-      // 1. Baca File
       Uint8List data = await file.readAsBytes();
-
-      // 2. Referensi Storage
       Reference ref = FirebaseStorage.instance.ref().child(
         'payment_proofs/$fileName',
       );
-
-      // 3. Upload
       UploadTask uploadTask = ref.putData(
         data,
         SettableMetadata(contentType: 'image/jpeg'),
       );
-
-      // 4. Tunggu Hasil
       TaskSnapshot snapshot = await uploadTask;
       String url = await snapshot.ref.getDownloadURL();
-
       print("✅ Upload Berhasil! URL: $url");
       return url;
     } catch (e) {
-      // --- BAGIAN INI YANG MENYELAMATKANMU ---
-      print("⚠️ Upload Gagal karena CORS/Jaringan. Menggunakan gambar dummy.");
-      print("Error detail: $e");
-
-      // Jangan throw error, tapi kembalikan link gambar palsu agar aplikasi tidak crash
-      // dan data booking tetap bisa disimpan ke database.
+      print("⚠️ Upload Gagal (CORS/Network). Pakai placeholder.");
       return "https://via.placeholder.com/400x300.png?text=Bukti+Transfer+(Error+Upload)";
     }
   }
 
-  // READ: Ambil Semua Data Pesanan
+  // READ: Ambil Semua Data Pesanan (ADMIN)
   Stream<QuerySnapshot> getOrdersStream() {
     return _ordersRef.orderBy('createdAt', descending: true).snapshots();
   }
 
-  // UPDATE: Admin Verifikasi
+  // READ: Ambil Data Pesanan Spesifik User (USER)
+  Stream<QuerySnapshot> getUserOrdersStream(String userIdentifier) {
+    return _ordersRef
+        .where('customerName', isEqualTo: userIdentifier)
+        .orderBy('createdAt', descending: true)
+        .snapshots();
+  }
+
+  // UPDATE Status Pesanan
   Future<void> updateOrderStatus(String docId, String newStatus) async {
     await _ordersRef.doc(docId).update({'status': newStatus});
   }
 
-  // DELETE: Hapus Pesanan
+  // DELETE Pesanan
   Future<void> deleteOrder(String docId) async {
     await _ordersRef.doc(docId).delete();
   }
 
   // ===========================================================================
-  // 2. BAGIAN LAINNYA (Settings, dll)
+  // 2. BAGIAN SETTINGS (Pricing, Operational, Carousel)
   // ===========================================================================
 
-  // PRICING FUNCTIONS
+  // --- PRICING ---
   Stream<DocumentSnapshot> getPricingStream() {
     return _settingsRef.doc('pricing').snapshots();
   }
@@ -126,7 +120,7 @@ class FirestoreService {
     }
   }
 
-  // PAYMENT INFO FUNCTIONS
+  // --- PAYMENT INFO ---
   Stream<DocumentSnapshot> getPaymentInfoStream() {
     return _settingsRef.doc('payment_info').snapshots();
   }
@@ -150,7 +144,7 @@ class FirestoreService {
     }
   }
 
-  // CAROUSEL FUNCTIONS
+  // --- CAROUSEL ---
   Stream<DocumentSnapshot> getCarouselStream() {
     return _settingsRef.doc('carousel').snapshots();
   }
@@ -179,30 +173,45 @@ class FirestoreService {
         SettableMetadata(contentType: 'image/jpeg'),
       );
       TaskSnapshot snapshot = await uploadTask;
-      String url = await snapshot.ref.getDownloadURL();
-      print("✅ Gambar carousel berhasil diupload!");
-      return url;
+      return await snapshot.ref.getDownloadURL();
     } catch (e) {
       print("❌ Gagal upload carousel: $e");
       throw Exception('Gagal mengupload gambar carousel.');
     }
   }
 
-  // OPERATIONAL HOURS FUNCTIONS
+  // --- OPERATIONAL HOURS ---
+
   Stream<DocumentSnapshot> getOperationalStream() {
     return _settingsRef.doc('operating_hours').snapshots();
   }
 
-  Future<void> updateOperationalHours(Map<String, dynamic> schedule) async {
+  // [FUNGSI UTAMA 1] Update seluruh dokumen (Legacy/Backward Compatibility)
+  Future<void> updateOperationalHours(Map<String, dynamic> scheduleData) async {
+    // Kita arahkan ke fungsi field spesifik agar aman
+    await updateOperationalHoursField('schedule', scheduleData);
+  }
+
+  // [FUNGSI UTAMA 2] Update Field Spesifik (schedule atau exceptions)
+  // Ini yang dipanggil oleh AdminOperationalScreen yang baru
+  Future<void> updateOperationalHoursField(
+    String fieldName,
+    dynamic data,
+  ) async {
     try {
+      print("🚀 Mengupdate field '$fieldName' di operating_hours...");
+
+      // Gunakan SetOptions(merge: true) agar field lain tidak hilang
+      // Contoh: Update 'exceptions' tidak akan menghapus 'schedule'
       await _settingsRef.doc('operating_hours').set({
-        'schedule': schedule,
+        fieldName: data,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
-      print("✅ Jam operasional berhasil diperbarui!");
+
+      print("✅ Sukses update field '$fieldName'!");
     } catch (e) {
-      print("❌ Gagal update jam operasional: $e");
-      throw Exception('Gagal memperbarui jam operasional.');
+      print("❌ Gagal update '$fieldName': $e");
+      throw Exception('Gagal menyimpan perubahan jam operasional.');
     }
   }
 
@@ -214,6 +223,7 @@ class FirestoreService {
     return _usersRef.where('role', isEqualTo: 'admin').snapshots();
   }
 
+  // Update Password (Hanya timestamp, karena pass asli di Auth)
   Future<void> updateAdminPassword(String userId, String newPassword) async {
     try {
       await _usersRef.doc(userId).update({
@@ -226,11 +236,29 @@ class FirestoreService {
     }
   }
 
+  // [BARU] Update Data User (Username & Phone) - Dipakai di Admin Management
+  Future<void> updateUserData(
+    String uid, {
+    required String username,
+    required String phone,
+  }) async {
+    try {
+      await _usersRef.doc(uid).update({
+        'username': username,
+        'phone': phone,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      print("✅ Data Admin berhasil diupdate!");
+    } catch (e) {
+      print("❌ Gagal update user: $e");
+      throw Exception('Gagal mengupdate data user.');
+    }
+  }
+
   // ===========================================================================
   // 4. BAGIAN ADMIN BOOKING MANAGEMENT
   // ===========================================================================
 
-  // Get filtered bookings berdasarkan status
   Stream<QuerySnapshot> getBookingsByStatus(String status) {
     if (status == 'Semua') {
       return _ordersRef.orderBy('createdAt', descending: true).snapshots();
@@ -241,7 +269,6 @@ class FirestoreService {
         .snapshots();
   }
 
-  // Get bookings dalam date range
   Future<List<Map<String, dynamic>>> getBookingsByDateRange(
     DateTime startDate,
     DateTime endDate,
@@ -262,18 +289,15 @@ class FirestoreService {
     }
   }
 
-  // Bulk update status
   Future<void> bulkUpdateOrderStatus(
     List<String> orderIds,
     String newStatus,
   ) async {
     try {
       final batch = FirebaseFirestore.instance.batch();
-
       for (String orderId in orderIds) {
         batch.update(_ordersRef.doc(orderId), {'status': newStatus});
       }
-
       await batch.commit();
       print("✅ Status pesanan berhasil diperbarui!");
     } catch (e) {
@@ -282,7 +306,6 @@ class FirestoreService {
     }
   }
 
-  // Add manual booking
   Future<void> addManualBooking({
     required String customerName,
     required String customerPhone,
@@ -310,7 +333,26 @@ class FirestoreService {
     }
   }
 
-  Future<void> updateOperational(
-    Map<String, List<Map<String, dynamic>>> map,
-  ) async {}
+  // [BARU] Fungsi Reschedule Beneran (Update Slot Waktu)
+  Future<void> rescheduleOrder({
+    required String orderId,
+    required List<Map<String, dynamic>> newBookings,
+  }) async {
+    try {
+      // Kita cari dokumen berdasarkan field 'orderId'
+      // Karena kadang ID dokumen == orderId, tapi kadang beda (tergantung implementasi add booking)
+      // Tapi di sini kita asumsikan doc ID = orderId sesuai fungsi addBooking
+
+      await _ordersRef.doc(orderId).update({
+        'bookings': newBookings, // Timpa slot lama dengan yang baru
+        'status': 'Rescheduled', // Ubah status
+        'isRescheduled': true, // Tandai pernah di-reschedule
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      print("✅ Order $orderId berhasil di-reschedule!");
+    } catch (e) {
+      print("❌ Gagal reschedule: $e");
+      throw Exception('Gagal melakukan reschedule.');
+    }
+  }
 }

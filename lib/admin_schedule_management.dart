@@ -7,10 +7,12 @@ class AdminScheduleManagementScreen extends StatefulWidget {
   const AdminScheduleManagementScreen({super.key});
 
   @override
-  State<AdminScheduleManagementScreen> createState() => _AdminScheduleManagementScreenState();
+  State<AdminScheduleManagementScreen> createState() =>
+      _AdminScheduleManagementScreenState();
 }
 
-class _AdminScheduleManagementScreenState extends State<AdminScheduleManagementScreen>
+class _AdminScheduleManagementScreenState
+    extends State<AdminScheduleManagementScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   final FirestoreService _firestoreService = FirestoreService();
@@ -18,7 +20,8 @@ class _AdminScheduleManagementScreenState extends State<AdminScheduleManagementS
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    // Menambah tab 'Pending' agar admin bisa memantau yang belum bayar
+    _tabController = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -27,49 +30,181 @@ class _AdminScheduleManagementScreenState extends State<AdminScheduleManagementS
     super.dispose();
   }
 
-  void _reschedule(String bookingId) {
+  // --- LOGIC: Buka Dialog Reschedule ---
+  void _showRescheduleDialog(Map<String, dynamic> orderData) {
+    // Ambil data booking lama (asumsi 1 order = 1 booking court untuk simplifikasi edit)
+    List bookings = orderData['bookings'] ?? [];
+    if (bookings.isEmpty) return;
+
+    Map<String, dynamic> firstBooking = bookings[0];
+    String courtName = firstBooking['court'] ?? 'Lapangan 1';
+
+    // Ambil slot pertama sebagai default value
+    List slots = firstBooking['slots'] ?? [];
+    String initialDateStr = slots.isNotEmpty ? slots[0]['date'] : '';
+    String initialTimeStr = slots.isNotEmpty ? slots[0]['time'] : '';
+
+    // Controller untuk Form
+    DateTime selectedDate = DateTime.now();
+    try {
+      // Coba parsing tanggal lama (Format: "Senin, 1 Januari 2025")
+      // Karena format teks susah diparse balik, kita default ke Now() dulu
+      // atau biarkan user pilih baru.
+    } catch (_) {}
+
+    final timeController = TextEditingController(text: initialTimeStr);
+    String selectedCourt = courtName;
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Reschedule Booking'),
-        content: Text('Jadwalkan ulang booking $bookingId?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Batal'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              try {
-                await _firestoreService.bulkUpdateOrderStatus([bookingId], 'Rescheduled');
-                if (mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('✅ Booking dijadwalkan ulang')),
-                  );
-                }
-              } catch (e) {
-                if (mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('❌ Error: $e')),
-                  );
-                }
-              }
-            },
-            child: const Text('Ya, Reschedule'),
-          ),
-        ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setStateDialog) {
+          return AlertDialog(
+            title: const Text('Reschedule Booking'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Atur Jadwal Baru:",
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 15),
+
+                  // 1. Pilih Tanggal
+                  const Text(
+                    "Tanggal Baru",
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  InkWell(
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: selectedDate,
+                        firstDate: DateTime.now(),
+                        lastDate: DateTime.now().add(const Duration(days: 60)),
+                      );
+                      if (picked != null) {
+                        setStateDialog(() => selectedDate = picked);
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      margin: const EdgeInsets.only(top: 5, bottom: 15),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            DateFormat(
+                              'EEEE, d MMMM yyyy',
+                              'id_ID',
+                            ).format(selectedDate),
+                          ),
+                          const Icon(Icons.calendar_today, size: 16),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // 2. Pilih Lapangan
+                  const Text(
+                    "Lapangan",
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  DropdownButtonFormField<String>(
+                    value: selectedCourt,
+                    items: ['Lapangan 1', 'Lapangan 2']
+                        .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                        .toList(),
+                    onChanged: (val) =>
+                        setStateDialog(() => selectedCourt = val!),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      contentPadding: EdgeInsets.symmetric(vertical: 8),
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+
+                  // 3. Input Jam (Manual String dulu agar fleksibel)
+                  const Text(
+                    "Jam (Contoh: 08:00 - 10:00)",
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  TextField(
+                    controller: timeController,
+                    decoration: const InputDecoration(
+                      hintText: "00:00 - 00:00",
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Batal'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  if (timeController.text.isEmpty) return;
+
+                  try {
+                    // Format data baru
+                    String newDateStr = DateFormat(
+                      'EEEE, d MMMM yyyy',
+                      'id_ID',
+                    ).format(selectedDate);
+
+                    // Struktur baru untuk di-save
+                    List<Map<String, dynamic>> newBookingsPayload = [
+                      {
+                        'court': selectedCourt,
+                        'slots': [
+                          {'date': newDateStr, 'time': timeController.text},
+                        ],
+                      },
+                    ];
+
+                    // Panggil Service
+                    await _firestoreService.rescheduleOrder(
+                      orderId: orderData['orderId'],
+                      newBookings: newBookingsPayload,
+                    );
+
+                    if (mounted) {
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('✅ Booking berhasil dipindah!'),
+                        ),
+                      );
+                    }
+                  } catch (e) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text('Error: $e')));
+                  }
+                },
+                child: const Text('Simpan Perubahan'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
-  void _cancelBooking(String bookingId) {
+  void _cancelBooking(String docId, String orderId) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Batalkan Booking'),
-        content: Text('Anda yakin ingin membatalkan booking $bookingId?'),
+        content: Text('Anda yakin ingin membatalkan booking $orderId?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -78,7 +213,7 @@ class _AdminScheduleManagementScreenState extends State<AdminScheduleManagementS
           ElevatedButton(
             onPressed: () async {
               try {
-                await _firestoreService.bulkUpdateOrderStatus([bookingId], 'Cancelled');
+                await _firestoreService.updateOrderStatus(docId, 'Cancelled');
                 if (mounted) {
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -87,14 +222,16 @@ class _AdminScheduleManagementScreenState extends State<AdminScheduleManagementS
                 }
               } catch (e) {
                 if (mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('❌ Error: $e')),
-                  );
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
                 }
               }
             },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Ya, Batalkan'),
           ),
         ],
@@ -104,101 +241,73 @@ class _AdminScheduleManagementScreenState extends State<AdminScheduleManagementS
 
   @override
   Widget build(BuildContext context) {
-    final List<String> statuses = ['Semua', 'Confirmed', 'Rescheduled'];
+    final List<String> statuses = [
+      'Confirmed',
+      'Pending',
+      'Rescheduled',
+      'Cancelled',
+    ];
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Jadwal Lapangan'),
-        backgroundColor: Theme.of(context).primaryColor,
+        backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
+        bottom: TabBar(
+          controller: _tabController,
+          isScrollable: true,
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.white70,
+          indicatorColor: Colors.white,
+          tabs: statuses.map((name) => Tab(text: name)).toList(),
+        ),
       ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text(
-              'Kelola Jadwal Lapangan',
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-          ),
-          // TAB BAR
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: TabBar(
-              controller: _tabController,
-              isScrollable: true,
-              indicatorSize: TabBarIndicatorSize.label,
-              indicator: BoxDecoration(
-                borderRadius: BorderRadius.circular(10),
-                color: Colors.blue,
-              ),
-              labelColor: Colors.white,
-              unselectedLabelColor: Colors.black87,
-              tabs: statuses.map((name) => Tab(text: name)).toList(),
-            ),
-          ),
-          // TAB BAR VIEW
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: statuses.map((status) {
-                return StreamBuilder<QuerySnapshot>(
-                  stream: status == 'Semua'
-                      ? _firestoreService.getOrdersStream()
-                      : _firestoreService.getBookingsByStatus(status),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
+      body: TabBarView(
+        controller: _tabController,
+        children: statuses.map((status) {
+          return StreamBuilder<QuerySnapshot>(
+            stream: _firestoreService.getBookingsByStatus(status),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snapshot.hasError)
+                return Center(child: Text('Error: ${snapshot.error}'));
 
-                    if (snapshot.hasError) {
-                      return Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                            const SizedBox(height: 16),
-                            Text('Error: ${snapshot.error}'),
-                          ],
-                        ),
-                      );
-                    }
-
-                    final docs = snapshot.data?.docs ?? [];
-                    if (docs.isEmpty) {
-                      return Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.search_off, size: 48, color: Colors.grey[400]),
-                            const SizedBox(height: 16),
-                            Text('Tidak ada jadwal dengan status "$status"'),
-                          ],
-                        ),
-                      );
-                    }
-
-                    return ListView.builder(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: docs.length,
-                      itemBuilder: (context, index) {
-                        final data = docs[index].data() as Map<String, dynamic>;
-                        final orderId = data['orderId'] ?? 'N/A';
-
-                        return BookingScheduleCard(
-                          data: data,
-                          onReschedule: () => _reschedule(orderId),
-                          onCancel: () => _cancelBooking(orderId),
-                        );
-                      },
-                    );
-                  },
+              final docs = snapshot.data?.docs ?? [];
+              if (docs.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.event_busy, size: 50, color: Colors.grey[300]),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Tidak ada jadwal "$status"',
+                        style: TextStyle(color: Colors.grey[500]),
+                      ),
+                    ],
+                  ),
                 );
-              }).toList(),
-            ),
-          ),
-        ],
+              }
+
+              return ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: docs.length,
+                itemBuilder: (context, index) {
+                  final doc = docs[index];
+                  final data = doc.data() as Map<String, dynamic>;
+
+                  return BookingScheduleCard(
+                    data: data,
+                    onReschedule: () => _showRescheduleDialog(data),
+                    onCancel: () => _cancelBooking(doc.id, data['orderId']),
+                  );
+                },
+              );
+            },
+          );
+        }).toList(),
       ),
     );
   }
@@ -210,6 +319,7 @@ class BookingScheduleCard extends StatelessWidget {
   final VoidCallback onCancel;
 
   const BookingScheduleCard({
+    super.key,
     required this.data,
     required this.onReschedule,
     required this.onCancel,
@@ -220,15 +330,24 @@ class BookingScheduleCard extends StatelessWidget {
     final orderId = data['orderId'] ?? 'N/A';
     final name = data['customerName'] ?? 'Unknown';
     final status = data['status'] ?? 'Unknown';
-    final total = data['totalPrice'] ?? 0;
-    final slots = (data['slots'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-    final createdAt = data['createdAt'] is Timestamp
-        ? (data['createdAt'] as Timestamp).toDate()
-        : DateTime.now();
 
-    String slotString = slots.isNotEmpty
-        ? slots.map((s) => '${s['court']} ${s['time']}').join(', ')
-        : 'N/A';
+    // Parse Slots
+    List slots =
+        (data['bookings'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    String slotDetails = "No Slot Data";
+
+    if (slots.isNotEmpty) {
+      // Ambil slot pertama dulu untuk display
+      var firstBooking = slots[0];
+      String court = firstBooking['court'] ?? '-';
+      List timeSlots = firstBooking['slots'] ?? [];
+
+      if (timeSlots.isNotEmpty) {
+        String date = timeSlots[0]['date'] ?? '-';
+        String times = timeSlots.map((s) => s['time']).join(', ');
+        slotDetails = "$court\n$date\nJam: $times";
+      }
+    }
 
     Color statusColor;
     switch (status.toLowerCase()) {
@@ -241,12 +360,15 @@ class BookingScheduleCard extends StatelessWidget {
       case 'cancelled':
         statusColor = Colors.red;
         break;
+      case 'pending':
+        statusColor = Colors.amber;
+        break;
       default:
         statusColor = Colors.grey;
     }
 
     return Card(
-      elevation: 1,
+      elevation: 2,
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       child: Padding(
@@ -261,73 +383,81 @@ class BookingScheduleCard extends StatelessWidget {
                   orderId,
                   style: const TextStyle(color: Colors.grey, fontSize: 12),
                 ),
-                Chip(
-                  label: Text(
-                    status,
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
                   ),
-                  backgroundColor: statusColor,
-                  padding: EdgeInsets.zero,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+                  decoration: BoxDecoration(
+                    color: statusColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: statusColor.withOpacity(0.5)),
+                  ),
+                  child: Text(
+                    status,
+                    style: TextStyle(
+                      color: statusColor,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 11,
+                    ),
+                  ),
                 ),
               ],
             ),
-            const Divider(height: 10, thickness: 0.5),
+            const SizedBox(height: 10),
             Text(
               name,
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
             ),
-            const SizedBox(height: 5),
-            // Date and Time
+            const Divider(),
+
+            // Slot Info
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.calendar_today, size: 14, color: Colors.grey),
-                const SizedBox(width: 4),
+                const Icon(
+                  Icons.access_time_filled,
+                  size: 18,
+                  color: Colors.blue,
+                ),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    DateFormat('dd/MM/yyyy').format(createdAt),
-                    style: const TextStyle(color: Colors.grey),
+                    slotDetails,
+                    style: const TextStyle(color: Colors.black87, height: 1.3),
                   ),
                 ),
               ],
             ),
-            // Slots
-            Text(
-              'Lapangan: $slotString',
-              style: const TextStyle(color: Colors.grey, fontSize: 12),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 10),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Rp ${NumberFormat('#,###').format(total)}',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                    color: Colors.green.shade700,
+
+            const SizedBox(height: 15),
+
+            // Action Buttons
+            if (status != 'Cancelled')
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: onReschedule,
+                    icon: const Icon(Icons.edit_calendar, size: 16),
+                    label: const Text("Reschedule"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.blue,
+                      side: const BorderSide(color: Colors.blue),
+                    ),
                   ),
-                ),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.cached, color: Colors.orange),
-                      onPressed: onReschedule,
-                      tooltip: 'Jadwal Ulang',
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: onCancel,
+                    icon: const Icon(Icons.cancel, size: 16),
+                    label: const Text("Batal"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                      side: const BorderSide(color: Colors.red),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.cancel, color: Colors.red),
-                      onPressed: onCancel,
-                      tooltip: 'Batalkan',
-                    ),
-                  ],
-                ),
-              ],
-            ),
+                  ),
+                ],
+              ),
           ],
         ),
       ),

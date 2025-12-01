@@ -1,17 +1,17 @@
 import 'package:flutter/material.dart';
-// --- IMPORT SEMUA FILE ADMIN UNTUK NAVIGASI ---
-import 'admin_account_screen.dart'; // Untuk Manajemen Akun
-import 'admin_carousel_management_screen.dart'; // Untuk Pengaturan Carousel
-import 'admin_history_screen.dart'; // Untuk Riwayat Pesanan
-import 'admin_operational_screen.dart'; // Untuk Jam Operasional
-import 'admin_price_and_payment_screen.dart'; // Untuk Tarif & Pembayaran
-import 'admin_schedule_management.dart'; // Untuk Kelola Jadwal
+import 'admin_account_screen.dart';
+import 'admin_carousel_management_screen.dart';
+import 'admin_history_screen.dart';
+import 'admin_operational_screen.dart';
+import 'admin_price_and_payment_screen.dart';
+import 'admin_schedule_management.dart';
+import 'services/auth_service.dart'; // Import Auth Service
+import 'screens/auth/login_screen.dart'; // Import Login Screen
 
 // --- Admin Home Screen (Stateless Widget) ---
 class AdminHomeScreen extends StatelessWidget {
   const AdminHomeScreen({super.key});
 
-  // Fungsi navigasi yang bersih
   void _navigateTo(BuildContext context, Widget screen) {
     Navigator.push(context, MaterialPageRoute(builder: (context) => screen));
   }
@@ -20,8 +20,8 @@ class AdminHomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Administrasi'),
-        backgroundColor: Theme.of(context).primaryColor,
+        title: const Text('Dashboard Admin'),
+        backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
       ),
       drawer: const AdminDrawer(),
@@ -31,75 +31,62 @@ class AdminHomeScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Manajemen Aplikasi',
+              'Pusat Kontrol',
               style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 5),
             const Text(
-              'Pilih kategori di bawah ini untuk mengelola konfigurasi sistem Tennis Court Anda.',
+              'Kelola seluruh konfigurasi aplikasi Tennis Court dari sini.',
               style: TextStyle(color: Colors.grey),
             ),
             const SizedBox(height: 25),
 
             // --- Menu Item Cards ---
             AdminMenuItemCard(
-              icon: Icons.manage_accounts, // Mengubah ikon settings lama
+              icon: Icons.manage_accounts,
               iconColor: Colors.teal,
               title: 'Manajemen Akun',
-              subtitle: 'Kelola kata sandi, email, dan detail akun Admin Anda.',
-              onTap: () => _navigateTo(
-                context,
-                const AdminAccountScreen(),
-              ), // Navigasi Bekerja
+              subtitle: 'Kelola data profil admin dan reset password.',
+              onTap: () => _navigateTo(context, const AdminAccountScreen()),
             ),
             AdminMenuItemCard(
               icon: Icons.payments,
               iconColor: Colors.amber,
               title: 'Tarif & Pembayaran',
-              subtitle:
-                  'Atur harga sewa per jam dan konfigurasi metode pembayaran.',
-              onTap: () => _navigateTo(
-                context,
-                const AdminPriceAndPaymentScreen(),
-              ), // Navigasi Bekerja
+              subtitle: 'Atur harga sewa dan info rekening pembayaran.',
+              onTap: () =>
+                  _navigateTo(context, const AdminPriceAndPaymentScreen()),
             ),
             AdminMenuItemCard(
               icon: Icons.schedule,
               iconColor: Colors.redAccent,
               title: 'Jam Operasional',
-              subtitle: 'Tentukan jam buka dan tutup harian Lapangan Tenis.',
-              onTap: () => _navigateTo(
-                context,
-                const AdminOperationalScreen(),
-              ), // Navigasi Bekerja
+              subtitle: 'Tentukan jam buka harian dan hari libur.',
+              onTap: () => _navigateTo(context, const AdminOperationalScreen()),
             ),
             AdminMenuItemCard(
               icon: Icons.image,
               iconColor: Colors.blue,
               title: 'Pengaturan Carousel',
-              subtitle:
-                  'Tambah, hapus, atau atur urutan gambar di halaman utama (carousel).',
-              onTap: () => _navigateTo(
-                context,
-                const AdminCarouselScreen(),
-              ), // Navigasi Bekerja
+              subtitle: 'Upload dan atur urutan banner promosi.',
+              onTap: () => _navigateTo(context, const AdminCarouselScreen()),
             ),
 
             const SizedBox(height: 30),
 
-            // --- TOMBOL KEMBALI KE APLIKASI USER ---
+            // --- TOMBOL KEMBALI KE MODE USER (TANPA LOGOUT) ---
             ElevatedButton.icon(
               onPressed: () {
-                // popUntil kembali ke root screen (MainScreen)
-                Navigator.popUntil(context, (route) => route.isFirst);
+                // Cukup kembali ke halaman sebelumnya (MainScreen)
+                Navigator.pop(context);
               },
               icon: const Icon(Icons.arrow_back),
               label: const Text(
-                'Kembali ke Halaman Booking',
+                'Kembali ke Tampilan User',
                 style: TextStyle(fontSize: 16),
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.grey.shade600,
+                backgroundColor: Colors.grey.shade700,
                 foregroundColor: Colors.white,
                 minimumSize: const Size.fromHeight(50),
                 shape: RoundedRectangleBorder(
@@ -187,7 +174,7 @@ class AdminDrawer extends StatelessWidget {
   const AdminDrawer({super.key});
 
   void _navigateToAndPopDrawer(BuildContext context, Widget screen) {
-    Navigator.pop(context); // Tutup drawer terlebih dahulu
+    Navigator.pop(context); // Tutup drawer
     Navigator.push(context, MaterialPageRoute(builder: (context) => screen));
   }
 
@@ -195,79 +182,86 @@ class AdminDrawer extends StatelessWidget {
   Widget build(BuildContext context) {
     return Drawer(
       child: Column(
-        // Menggunakan Column agar bisa menggunakan Spacer
         children: <Widget>[
-          DrawerHeader(
+          UserAccountsDrawerHeader(
             decoration: BoxDecoration(color: Theme.of(context).primaryColor),
-            child: const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                Text(
-                  'Admin Panel',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Text(
-                  'Tennis Court.',
-                  style: TextStyle(color: Colors.white70, fontSize: 14),
-                ),
-              ],
+            accountName: const Text(
+              "Admin Panel",
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+            ),
+            accountEmail: const Text("Administrator Mode"),
+            currentAccountPicture: const CircleAvatar(
+              backgroundColor: Colors.white,
+              child: Icon(
+                Icons.admin_panel_settings,
+                size: 40,
+                color: Colors.blue,
+              ),
             ),
           ),
 
-          // --- ITEM NAVIGASI DRAWER ---
+          // --- MENU UTAMA ---
+
+          // 1. Dashboard (Halaman ini)
           _buildDrawerItem(
             context,
-            icon: Icons.home,
-            title: 'Home Page (Admin)',
-            onTap: () =>
-                _navigateToAndPopDrawer(context, const AdminHomeScreen()),
+            icon: Icons.dashboard,
+            title: 'Dashboard Utama',
+            onTap: () {
+              Navigator.pop(context);
+            },
           ),
+
+          // 2. Kelola Jadwal
           _buildDrawerItem(
             context,
-            icon: Icons.calendar_today,
-            title: 'Kelola Jadwal',
+            icon: Icons.calendar_month,
+            title: 'Kelola Jadwal Booking',
             onTap: () => _navigateToAndPopDrawer(
               context,
               const AdminScheduleManagementScreen(),
-            ), // Navigasi Bekerja
-          ),
-          _buildDrawerItem(
-            context,
-            icon: Icons.history,
-            title: 'Riwayat Pesanan',
-            onTap: () => _navigateToAndPopDrawer(
-              context,
-              const AdminHistoryScreen(),
-            ), // Navigasi Bekerja
-          ),
-          _buildDrawerItem(
-            context,
-            icon: Icons.settings,
-            title: 'Pengaturan',
-            onTap: () =>
-                _navigateToAndPopDrawer(context, const AdminHomeScreen()),
+            ),
           ),
 
-          const Spacer(), // Mendorong item di bawah ke paling bawah
-          // --- LOGOUT / KEMBALI ---
+          // 3. Riwayat Pesanan
+          _buildDrawerItem(
+            context,
+            icon: Icons.history_edu,
+            title: 'Laporan Riwayat',
+            onTap: () =>
+                _navigateToAndPopDrawer(context, const AdminHistoryScreen()),
+          ),
+
+          const Spacer(),
+          const Divider(),
+
+          // --- KELUAR (LOGOUT BENERAN) ---
           ListTile(
-            leading: const Icon(Icons.arrow_back, color: Colors.red),
-            title: const Text('Keluar & Kembali ke Booking'),
-            onTap: () {
-              Navigator.popUntil(context, (route) => route.isFirst);
+            leading: const Icon(Icons.logout, color: Colors.red),
+            title: const Text(
+              'Logout Akun',
+              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+            ),
+            onTap: () async {
+              // 1. Sign Out dari Firebase
+              await AuthService().signOut();
+
+              // 2. Kembali ke Login Screen (Hapus semua rute sebelumnya)
+              if (context.mounted) {
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  (route) => false,
+                );
+              }
             },
           ),
+          const SizedBox(height: 20),
         ],
       ),
     );
   }
 
-  // Widget Pembantu untuk item Drawer
   Widget _buildDrawerItem(
     BuildContext context, {
     required IconData icon,

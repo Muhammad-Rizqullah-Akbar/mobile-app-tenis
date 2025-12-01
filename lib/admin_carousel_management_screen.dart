@@ -1,4 +1,7 @@
+import 'dart:io'; // Untuk menampilkan preview gambar di HP
+import 'package:flutter/foundation.dart'; // Untuk kIsWeb
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart'; // [WAJIB] Import Image Picker
 import '../services/firestore_service.dart';
 
 // --- Model Data Gambar Carousel ---
@@ -36,9 +39,12 @@ class AdminCarouselScreen extends StatefulWidget {
 
 class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
   final FirestoreService _firestoreService = FirestoreService();
+  final ImagePicker _picker = ImagePicker(); // Instance Image Picker
 
   List<CarouselImage> _images = [];
+  XFile? _pickedFile; // File yang dipilih user
   String? _fileName;
+
   bool _isLoading = false;
   final TextEditingController _descriptionController = TextEditingController();
 
@@ -51,12 +57,13 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
   Future<void> _loadImages() async {
     try {
       final stream = _firestoreService.getCarouselStream();
-      final snapshot = await stream.first;
-      if (mounted) {
+      final snapshot = await stream.first; // Ambil sekali saja
+      if (mounted && snapshot.exists) {
         final data = snapshot.data() as Map<String, dynamic>?;
-        final images = data?['images'] as List? ?? [];
+        final imagesData = data?['images'] as List? ?? [];
+
         setState(() {
-          _images = images
+          _images = imagesData
               .map(
                 (img) => CarouselImage(
                   id: img['id'] ?? '',
@@ -67,10 +74,13 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
                 ),
               )
               .toList();
+
+          // Sortir berdasarkan urutan agar tampilan sesuai
+          _images.sort((a, b) => a.order.compareTo(b.order));
         });
       }
     } catch (e) {
-      print('❌ Error loading carousel images: $e');
+      debugPrint('❌ Error loading carousel images: $e');
     }
   }
 
@@ -80,17 +90,31 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
     super.dispose();
   }
 
-  void _pickFile() {
-    setState(() {
-      _fileName = 'new_image_${_images.length + 1}.jpg';
-    });
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('File dipilih: $_fileName')));
+  // 1. FUNGSI PILIH GAMBAR (REAL)
+  Future<void> _pickFile() async {
+    try {
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 80, // Kompres sedikit biar cepat upload
+      );
+
+      if (image != null) {
+        setState(() {
+          _pickedFile = image;
+          _fileName = image.name;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Gambar berhasil dipilih!')),
+        );
+      }
+    } catch (e) {
+      debugPrint("Error picking image: $e");
+    }
   }
 
+  // 2. FUNGSI UPLOAD KE FIREBASE STORAGE & SIMPAN DATA
   Future<void> _uploadAndAdd() async {
-    if (_fileName == null) {
+    if (_pickedFile == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Pilih file gambar terlebih dahulu!')),
       );
@@ -99,19 +123,27 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
 
     setState(() => _isLoading = true);
     try {
+      // A. Upload Gambar ke Storage
+      String uniqueName = '${DateTime.now().millisecondsSinceEpoch}_$_fileName';
+      String downloadUrl = await _firestoreService.uploadCarouselImage(
+        _pickedFile!,
+        uniqueName,
+      );
+
+      // B. Buat Object CarouselImage Baru
       final newImage = CarouselImage(
-        id: 'carousel_${DateTime.now().millisecondsSinceEpoch}',
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
         name: _fileName!,
-        url: 'https://placeholder.com/400x300?text=${_fileName!}',
+        url: downloadUrl, // Gunakan URL asli dari Firebase
         altText: _descriptionController.text.isEmpty
             ? 'Gambar Lapangan'
             : _descriptionController.text,
-        order: _images.length + 1,
+        order: _images.length + 1, // Taruh di urutan terakhir
       );
 
+      // C. Update State Lokal & Kirim ke Firestore
       setState(() {
         _images.add(newImage);
-        _images.sort((a, b) => a.order.compareTo(b.order));
       });
 
       await _firestoreService.updateCarouselImages(
@@ -121,6 +153,7 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
       if (mounted) {
         setState(() {
           _isLoading = false;
+          _pickedFile = null;
           _fileName = null;
           _descriptionController.clear();
         });
@@ -138,10 +171,51 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
     }
   }
 
+  // 3. FUNGSI HAPUS GAMBAR
   Future<void> _deleteImage(String id) async {
+    // Konfirmasi hapus
+    bool confirm =
+        await showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Hapus Gambar?'),
+            content: const Text('Gambar akan dihapus dari carousel.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Batal'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Hapus'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirm) return;
+
     setState(() => _isLoading = true);
     try {
-      setState(() => _images.removeWhere((img) => img.id == id));
+      setState(() {
+        _images.removeWhere((img) => img.id == id);
+        // Reset urutan (1, 2, 3...) setelah hapus
+        for (int i = 0; i < _images.length; i++) {
+          _images[i] = CarouselImage(
+            id: _images[i].id,
+            name: _images[i].name,
+            url: _images[i].url,
+            altText: _images[i].altText,
+            order: i + 1,
+          );
+        }
+      });
+
       await _firestoreService.updateCarouselImages(
         _images.map((i) => i.toJson()).toList(),
       );
@@ -162,6 +236,7 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
     }
   }
 
+  // 4. FUNGSI REORDER (GESER URUTAN)
   Future<void> _reorder(int oldIndex, int newIndex) async {
     setState(() => _isLoading = true);
     try {
@@ -169,6 +244,8 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
         if (newIndex > oldIndex) newIndex -= 1;
         final item = _images.removeAt(oldIndex);
         _images.insert(newIndex, item);
+
+        // Update field 'order' untuk semua item sesuai posisi baru
         for (int i = 0; i < _images.length; i++) {
           _images[i] = CarouselImage(
             id: _images[i].id,
@@ -179,6 +256,8 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
           );
         }
       });
+
+      // Simpan urutan baru ke Firestore
       await _firestoreService.updateCarouselImages(
         _images.map((i) => i.toJson()).toList(),
       );
@@ -198,11 +277,14 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Administrasi'),
-        backgroundColor: Theme.of(context).primaryColor,
+        title: const Text('Manajemen Carousel'),
+        backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
       ),
-      body: _isLoading
+      body:
+          _isLoading &&
+              _images
+                  .isEmpty // Loading awal saja
           ? const Center(child: CircularProgressIndicator())
           : CustomScrollView(
               slivers: [
@@ -211,15 +293,15 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
                   sliver: SliverList(
                     delegate: SliverChildListDelegate([
                       const Text(
-                        'Manajemen Gambar Carousel',
+                        'Kelola Banner Aplikasi',
                         style: TextStyle(
-                          fontSize: 24,
+                          fontSize: 20,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                       const SizedBox(height: 5),
                       const Text(
-                        'Kelola gambar yang ditampilkan di halaman utama (carousel).',
+                        'Urutkan gambar dengan menekan tahan dan geser.',
                         style: TextStyle(color: Colors.grey),
                       ),
                       const SizedBox(height: 20),
@@ -227,12 +309,23 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
                       _buildUploadSection(),
                       const SizedBox(height: 30),
 
-                      Text(
-                        'Daftar Gambar (${_images.length})',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Daftar Gambar (${_images.length})',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          if (_isLoading && _images.isNotEmpty)
+                            const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                        ],
                       ),
                       const Divider(height: 20),
                     ]),
@@ -245,7 +338,9 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
                   itemBuilder: (context, index) {
                     final image = _images[index];
                     return CarouselImageCard(
-                      key: ValueKey(image.id),
+                      key: ValueKey(
+                        image.id,
+                      ), // Key unik wajib untuk ReorderableList
                       image: image,
                       onDelete: () => _deleteImage(image.id),
                     );
@@ -265,7 +360,11 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 5),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
         ],
       ),
       child: Column(
@@ -275,7 +374,23 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
             'Unggah Gambar Baru',
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
-          const Divider(),
+          const SizedBox(height: 12),
+
+          // Area Preview Gambar
+          if (_pickedFile != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12.0),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: SizedBox(
+                  height: 150,
+                  width: double.infinity,
+                  child: kIsWeb
+                      ? Image.network(_pickedFile!.path, fit: BoxFit.cover)
+                      : Image.file(File(_pickedFile!.path), fit: BoxFit.cover),
+                ),
+              ),
+            ),
 
           Row(
             children: [
@@ -289,19 +404,21 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    _fileName ?? 'Choose File • No file chosen',
-                    style: const TextStyle(color: Colors.grey),
+                    _fileName ?? 'Belum ada file dipilih',
+                    style: TextStyle(
+                      color: _fileName == null ? Colors.grey : Colors.black87,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ),
               const SizedBox(width: 10),
-
               ElevatedButton(
                 onPressed: _pickFile,
                 style: ElevatedButton.styleFrom(
                   minimumSize: const Size(50, 50),
-                  backgroundColor: Colors.grey.shade200,
-                  foregroundColor: Colors.black87,
+                  backgroundColor: Colors.blue.shade50,
+                  foregroundColor: Colors.blue,
                   elevation: 0,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
@@ -317,7 +434,7 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
           TextField(
             controller: _descriptionController,
             decoration: const InputDecoration(
-              hintText: 'Deskripsi / Alt Text',
+              labelText: 'Deskripsi / Alt Text (Opsional)',
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.all(Radius.circular(8)),
               ),
@@ -331,16 +448,28 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
 
           const SizedBox(height: 20),
 
-          ElevatedButton.icon(
-            onPressed: _uploadAndAdd,
-            icon: const Icon(Icons.upload),
-            label: const Text('Unggah & Tambahkan'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              foregroundColor: Colors.white,
-              minimumSize: const Size.fromHeight(50),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _isLoading ? null : _uploadAndAdd,
+              icon: _isLoading
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2,
+                      ),
+                    )
+                  : const Icon(Icons.cloud_upload),
+              label: Text(_isLoading ? 'Mengunggah...' : 'Unggah & Tambahkan'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
               ),
             ),
           ),
@@ -350,7 +479,7 @@ class _AdminCarouselScreenState extends State<AdminCarouselScreen> {
   }
 }
 
-// --- Widget Card Gambar ---
+// --- Widget Card Gambar (Draggable) ---
 class CarouselImageCard extends StatelessWidget {
   final CarouselImage image;
   final VoidCallback onDelete;
@@ -364,40 +493,86 @@ class CarouselImageCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      key: ValueKey(image.id),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
       child: Card(
-        elevation: 1,
+        elevation: 2,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 8,
+          ),
+          // Handle untuk Drag
           leading: ReorderableDragStartListener(
             index: image.order - 1,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.menu, color: Colors.grey),
-                const SizedBox(width: 5),
-                Container(
-                  width: 40,
-                  height: 40,
-                  color: Colors.grey.shade200,
-                  child: Center(child: Text('${image.order}')),
-                ),
-              ],
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.drag_handle, color: Colors.grey),
             ),
           ),
-          title: Text(
-            image.name,
-            style: const TextStyle(fontWeight: FontWeight.w600),
-          ),
-          subtitle: Text(
-            image.url,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12),
+          // Preview Kecil
+          title: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Image.network(
+                  image.url,
+                  width: 60,
+                  height: 45,
+                  fit: BoxFit.cover,
+                  errorBuilder: (ctx, err, stack) => Container(
+                    width: 60,
+                    height: 45,
+                    color: Colors.grey.shade300,
+                    child: const Icon(Icons.broken_image, size: 20),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Nama File (Bold)
+                    Text(
+                      image.name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+
+                    // Alt Text (Subtitle) - FIX: Tampilkan altText, bukan URL
+                    Text(
+                      image.altText.isNotEmpty
+                          ? image.altText
+                          : "Tidak ada deskripsi",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade600,
+                        fontStyle: image.altText.isEmpty
+                            ? FontStyle.italic
+                            : FontStyle.normal,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
           trailing: IconButton(
             icon: const Icon(Icons.delete, color: Colors.red),
             onPressed: onDelete,
+            tooltip: "Hapus Gambar",
           ),
         ),
       ),

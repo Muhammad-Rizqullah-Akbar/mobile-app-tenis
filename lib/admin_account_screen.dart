@@ -1,22 +1,36 @@
 import 'package:flutter/material.dart';
-import 'services/firestore_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../services/firestore_service.dart';
+import '../services/auth_service.dart'; // Import Auth Service
 
-// --- Model Data Sederhana untuk Admin User ---
+// --- Model Data Admin ---
 class AdminUser {
   final String id;
-  final String name;
+  final String username;
   final String email;
-  final String createdAt;
+  final String phone;
+  final String role;
 
   AdminUser({
     required this.id,
-    required this.name,
+    required this.username,
     required this.email,
-    required this.createdAt,
+    required this.phone,
+    required this.role,
   });
+
+  factory AdminUser.fromFirestore(DocumentSnapshot doc) {
+    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+    return AdminUser(
+      id: doc.id,
+      username: data['username'] ?? 'Tanpa Nama',
+      email: data['email'] ?? 'No Email',
+      phone: data['phone'] ?? '-',
+      role: data['role'] ?? 'user',
+    );
+  }
 }
 
-// --- Admin Account Management Screen ---
 class AdminAccountScreen extends StatefulWidget {
   const AdminAccountScreen({super.key});
 
@@ -26,54 +40,16 @@ class AdminAccountScreen extends StatefulWidget {
 
 class _AdminAccountScreenState extends State<AdminAccountScreen> {
   final FirestoreService _firestoreService = FirestoreService();
+  final AuthService _authService = AuthService();
   bool _isLoading = false;
 
-  List<AdminUser> _adminUsers = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadAdminUsers();
-  }
-
-  Future<void> _loadAdminUsers() async {
-    setState(() => _isLoading = true);
-    try {
-      final stream = _firestoreService.getAdminsStream();
-      stream
-          .listen((snapshot) {
-            if (mounted) {
-              setState(() {
-                _adminUsers = snapshot.docs.map((doc) {
-                  final data = doc.data() as Map<String, dynamic>;
-                  return AdminUser(
-                    id: doc.id,
-                    name: data['name'] ?? 'Unknown',
-                    email: data['email'] ?? 'N/A',
-                    createdAt: data['createdAt'] ?? 'N/A',
-                  );
-                }).toList();
-                _isLoading = false;
-              });
-            }
-          })
-          .onError((error) {
-            print('❌ Error loading users: $error');
-            if (mounted) setState(() => _isLoading = false);
-          });
-    } catch (e) {
-      print('❌ Error: $e');
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  // LOGIKA: Fungsi untuk menghapus user
-  Future<void> _deleteUser(String id) async {
+  // --- LOGIC 1: DELETE USER (Hanya Database) ---
+  Future<void> _deleteUser(String id, String email) async {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Konfirmasi Hapus'),
-        content: const Text('Yakin ingin menghapus user ini?'),
+        title: const Text('Hapus Admin?'),
+        content: Text('Anda yakin ingin menghapus akses admin untuk $email?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -84,47 +60,176 @@ class _AdminAccountScreenState extends State<AdminAccountScreen> {
               Navigator.pop(context);
               setState(() => _isLoading = true);
               try {
-                // Delete from users collection
-                await _firestoreService.getAdminsStream().first;
+                // Di aplikasi real, menghapus Auth User orang lain butuh backend (Cloud Functions).
+                // Di sini kita hanya hapus data di Firestore agar dia tidak muncul di list/login app.
+                await FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(id)
+                    .delete();
+
                 if (mounted) {
-                  setState(() => _adminUsers.removeWhere((u) => u.id == id));
-                  setState(() => _isLoading = false);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('✅ User berhasil dihapus!')),
+                    const SnackBar(
+                      content: Text(
+                        '✅ Data admin berhasil dihapus dari database.',
+                      ),
+                    ),
                   );
                 }
               } catch (e) {
                 if (mounted) {
-                  setState(() => _isLoading = false);
                   ScaffoldMessenger.of(
                     context,
                   ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
                 }
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
               }
             },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Hapus', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Hapus'),
           ),
         ],
       ),
     );
   }
 
-  // LOGIKA: Fungsi untuk mengedit user (akan membuka dialog atau halaman baru)
-  void _editUser(AdminUser user) {
-    // Di sini Anda bisa menavigasi ke halaman edit atau menampilkan dialog
+  // --- LOGIC 2: EDIT USER & RESET PASSWORD ---
+  void _showEditDialog(AdminUser user) {
+    final nameController = TextEditingController(text: user.username);
+    final phoneController = TextEditingController(text: user.phone);
+    final emailController = TextEditingController(
+      text: user.email,
+    ); // Read only
+
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit User'),
-        content: Text('Anda ingin mengedit user: ${user.name} (${user.email})'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Edit Data Admin'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Username
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Username / Nama',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Phone
+                TextField(
+                  controller: phoneController,
+                  decoration: const InputDecoration(
+                    labelText: 'No. WhatsApp',
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.phone,
+                ),
+                const SizedBox(height: 12),
+
+                // Email (Read Only)
+                TextField(
+                  controller: emailController,
+                  readOnly: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Email (Tidak bisa diubah)',
+                    border: OutlineInputBorder(),
+                    filled: true,
+                    fillColor: Colors.black12,
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // Tombol Reset Password
+                const Text(
+                  "Keamanan:",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      try {
+                        await _authService.sendPasswordResetEmail(user.email);
+                        if (context.mounted) {
+                          Navigator.pop(context); // Tutup dialog
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                '📧 Link reset password telah dikirim ke ${user.email}',
+                              ),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                        }
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Gagal kirim email: $e')),
+                          );
+                        }
+                      }
+                    },
+                    icon: const Icon(Icons.lock_reset, color: Colors.orange),
+                    label: const Text(
+                      "Kirim Email Reset Password",
+                      style: TextStyle(color: Colors.orange),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.orange),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Batal'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                setState(() => _isLoading = true);
+                Navigator.pop(context); // Tutup dialog dulu
+                try {
+                  await _firestoreService.updateUserData(
+                    user.id,
+                    username: nameController.text,
+                    phone: phoneController.text,
+                  );
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('✅ Data berhasil diperbarui!'),
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
+                  }
+                } finally {
+                  if (mounted) setState(() => _isLoading = false);
+                }
+              },
+              child: const Text('Simpan Perubahan'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -132,77 +237,49 @@ class _AdminAccountScreenState extends State<AdminAccountScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Administrasi'),
-        backgroundColor: Theme.of(context).primaryColor,
+        title: const Text('Manajemen Akun'),
+        backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Manajemen Akun Admin',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
-                  const Text(
-                    'Kelola daftar akun admin yang terdaftar di Firebase Authentication.',
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                  const SizedBox(height: 20),
+          : StreamBuilder<QuerySnapshot>(
+              stream: _firestoreService.getAdminsStream(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(child: Text("Error: ${snapshot.error}"));
+                }
+                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                  return const Center(child: Text("Tidak ada data admin."));
+                }
 
-                  // --- Daftar Pengguna Admin ---
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.grey.withOpacity(0.1),
-                          spreadRadius: 1,
-                          blurRadius: 5,
-                          offset: const Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Daftar Pengguna Admin',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const Divider(height: 20, thickness: 1),
-                        ListView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: _adminUsers.length,
-                          itemBuilder: (context, index) {
-                            final user = _adminUsers[index];
-                            return AdminUserCard(
-                              user: user,
-                              onEdit: () => _editUser(user),
-                              onDelete: () => _deleteUser(user.id),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+                // Convert data Firestore ke List AdminUser
+                final admins = snapshot.data!.docs
+                    .map((doc) => AdminUser.fromFirestore(doc))
+                    .toList();
+
+                return ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: admins.length,
+                  itemBuilder: (context, index) {
+                    final user = admins[index];
+                    return AdminUserCard(
+                      user: user,
+                      onEdit: () => _showEditDialog(user),
+                      onDelete: () => _deleteUser(user.id, user.email),
+                    );
+                  },
+                );
+              },
             ),
     );
   }
 }
 
-// --- Widget Kartu Pengguna Admin ---
+// --- WIDGET KARTU ADMIN ---
 class AdminUserCard extends StatelessWidget {
   final AdminUser user;
   final VoidCallback onEdit;
@@ -218,44 +295,87 @@ class AdminUserCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      elevation: 1,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
-        padding: const EdgeInsets.all(12.0),
+        padding: const EdgeInsets.all(16.0),
         child: Row(
           children: [
-            const Icon(Icons.person_outline, size: 30, color: Colors.grey),
-            const SizedBox(width: 15),
+            // Avatar
+            CircleAvatar(
+              backgroundColor: Colors.blue.shade100,
+              child: Text(
+                user.username.isNotEmpty ? user.username[0].toUpperCase() : 'A',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue,
+                ),
+              ),
+            ),
+            const SizedBox(width: 16),
+
+            // Info User
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    user.name,
+                    user.username,
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 16,
                     ),
                   ),
-                  Text(
-                    user.email,
-                    style: const TextStyle(color: Colors.grey, fontSize: 13),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      const Icon(Icons.email, size: 14, color: Colors.grey),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          user.email,
+                          style: const TextStyle(
+                            color: Colors.grey,
+                            fontSize: 13,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
                   ),
-                  Text(
-                    'Dibuat: ${user.createdAt}',
-                    style: const TextStyle(color: Colors.grey, fontSize: 11),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      const Icon(Icons.phone, size: 14, color: Colors.grey),
+                      const SizedBox(width: 4),
+                      Text(
+                        user.phone,
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
-            IconButton(
-              icon: const Icon(Icons.edit, color: Colors.blue),
-              onPressed: onEdit,
-            ),
-            IconButton(
-              icon: const Icon(Icons.delete, color: Colors.red),
-              onPressed: onDelete,
+
+            // Tombol Aksi
+            Column(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.edit, color: Colors.orange),
+                  onPressed: onEdit,
+                  tooltip: 'Edit Data',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete, color: Colors.red),
+                  onPressed: onDelete,
+                  tooltip: 'Hapus Akses',
+                ),
+              ],
             ),
           ],
         ),

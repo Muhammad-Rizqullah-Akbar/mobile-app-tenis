@@ -1,81 +1,100 @@
 import 'package:flutter/material.dart';
-// [PENTING] Import Firebase Core
 import 'package:firebase_core/firebase_core.dart';
-// [PENTING] Import Konfigurasi (File ini dibuat otomatis oleh flutterfire configure)
 import 'firebase_options.dart';
+import 'services/auth_service.dart';
 
-// --- IMPORT SEMUA FILE YANG DIBUTUHKAN ---
+// SCREEN IMPORTS
+import 'screens/auth/login_screen.dart';
 import 'admin_home_screen.dart';
-import 'order_history_search_screen.dart';
-import 'order_history.dart';
 import 'booking_screen.dart';
-// import 'payment_confirmation_screen.dart'; // Tidak dipakai langsung di MainScreen, tapi dibutuhkan navigasi nanti
+import 'order_history_search_screen.dart';
+// import 'order_history.dart'; // Tidak perlu lagi karena pakai search screen di tab
 
-// ----------------------------------------------------
-// --- 1. FUNGSI UTAMA (MAIN) ---
-// ----------------------------------------------------
 void main() async {
-  // 1. Pastikan engine Flutter siap sebelum menjalankan kode async
   WidgetsFlutterBinding.ensureInitialized();
-
-  // 2. Inisialisasi Firebase
-  // Tanpa baris ini, aplikasi akan ERROR MERAH (FirebaseException) saat dibuka
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-
-  // 3. Jalankan Aplikasi
   runApp(const BookingApp());
 }
 
-// ----------------------------------------------------
-// --- 2. WIDGET UTAMA: BookingApp ---
-// ----------------------------------------------------
 class BookingApp extends StatelessWidget {
   const BookingApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Booking App Kuliah',
+      title: 'Booking App',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.blue,
         fontFamily: 'Inter',
         useMaterial3: true,
       ),
-      home: const MainScreen(),
+      home: const AuthGate(),
     );
   }
 }
 
-// ----------------------------------------------------
-// --- 3. MAIN SCREEN DENGAN BOTTOM NAVIGATION ---
-// ----------------------------------------------------
+// Widget Penjaga Gerbang (AuthGate)
+class AuthGate extends StatefulWidget {
+  const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  final AuthService _authService = AuthService();
+  bool _isLoading = true;
+  Widget? _targetScreen;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkLoginStatus();
+  }
+
+  void _checkLoginStatus() async {
+    final user = _authService.currentUser;
+
+    if (user == null) {
+      setState(() {
+        _targetScreen = const LoginScreen();
+        _isLoading = false;
+      });
+    } else {
+      setState(() {
+        _targetScreen = const MainScreen();
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    return _targetScreen!;
+  }
+}
+
+// --- MainScreen (User Dashboard) ---
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
-
   @override
   State<MainScreen> createState() => _MainScreenState();
 }
 
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
-
-  // Daftar Halaman untuk Bottom Navbar
   static final List<Widget> _widgetOptions = <Widget>[
-    // Tab 1: Booking Screen (Sudah diperbaiki dengan logic anti-bentrok)
     const BookingScreen(),
-
-    // Tab 2: Pencarian Riwayat (Nanti kita perbaiki juga agar connect database)
     const OrderHistorySearchScreen(),
-
-    // Tab 3: Profil User & Admin Link
     const ProfilePage(),
   ];
 
   void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
+    setState(() => _selectedIndex = index);
   }
 
   @override
@@ -83,9 +102,8 @@ class _MainScreenState extends State<MainScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Tennis Court'),
-        backgroundColor: Theme.of(context).primaryColor,
+        backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
-        elevation: 4,
       ),
       body: _widgetOptions[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
@@ -94,10 +112,7 @@ class _MainScreenState extends State<MainScreen> {
             icon: Icon(Icons.home_outlined),
             label: 'Home',
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.history), // Icon History lebih cocok
-            label: 'Riwayat',
-          ),
+          BottomNavigationBarItem(icon: Icon(Icons.history), label: 'Riwayat'),
           BottomNavigationBarItem(
             icon: Icon(Icons.person_outlined),
             label: 'Profile',
@@ -105,78 +120,123 @@ class _MainScreenState extends State<MainScreen> {
         ],
         currentIndex: _selectedIndex,
         selectedItemColor: Colors.blue,
-        unselectedItemColor: Colors.grey,
         onTap: _onItemTapped,
       ),
     );
   }
 }
 
-// ----------------------------------------------------
-// --- 4. PROFILE PAGE (AKSES ADMIN & RIWAYAT) ---
-// ----------------------------------------------------
+// --- Profile Page (VERSI BERSIH) ---
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final user = AuthService().currentUser;
+
     return Padding(
       padding: const EdgeInsets.all(20.0),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          const Center(
-            child: CircleAvatar(
-              radius: 50,
-              child: Icon(Icons.person, size: 60),
-            ),
+        children: [
+          // Foto & Nama
+          const CircleAvatar(
+            radius: 50,
+            backgroundColor: Colors.deepPurple,
+            child: Icon(Icons.person, size: 60, color: Colors.white),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 10),
+          const Text(
+            "User Profile",
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
           Text(
-            'User Profile',
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
-          const Divider(),
-
-          // Menu Riwayat Pesanan
-          ListTile(
-            leading: const Icon(Icons.history),
-            title: const Text('Riwayat Pesanan Saya'),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const OrderHistoryScreen()),
-              );
-            },
+            user?.email ?? "Guest",
+            style: TextStyle(color: Colors.grey[600], fontSize: 14),
           ),
 
-          // Menu Akses Admin
-          ListTile(
-            leading: const Icon(Icons.admin_panel_settings, color: Colors.red),
-            title: const Text('Akses Admin Panel'),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const AdminHomeScreen()),
-              );
+          const SizedBox(height: 20),
+          const Divider(), // Garis Pemisah
+          // [DIHAPUS] Menu "Riwayat Pesanan Saya" sudah dibuang dari sini
+
+          // --- LOGIC TOMBOL ADMIN ---
+          FutureBuilder<String>(
+            future: AuthService().getUserRole(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const SizedBox.shrink();
+              }
+
+              // Hanya tampil jika Admin
+              if (snapshot.hasData && snapshot.data == 'admin') {
+                return Column(
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: ListTile(
+                        leading: const Icon(
+                          Icons.admin_panel_settings,
+                          color: Colors.red,
+                        ),
+                        title: const Text(
+                          'Admin Panel',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.red,
+                          ),
+                        ),
+                        subtitle: const Text('Masuk ke dashboard pengelola'),
+                        trailing: const Icon(
+                          Icons.arrow_forward_ios,
+                          size: 16,
+                          color: Colors.red,
+                        ),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const AdminHomeScreen(),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const Divider(),
+                  ],
+                );
+              }
+              return const SizedBox.shrink();
             },
           ),
 
           const Spacer(),
 
-          ElevatedButton.icon(
-            onPressed: () {
-              // Logic logout bisa ditambahkan di sini (misal FirebaseAuth.signOut)
-              ScaffoldMessenger.of(
-                context,
-              ).showSnackBar(const SnackBar(content: Text('Logout berhasil.')));
-            },
-            icon: const Icon(Icons.logout),
-            label: const Text('Logout'),
-            style: ElevatedButton.styleFrom(
-              minimumSize: const Size.fromHeight(50),
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
+          // Tombol Logout
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                await AuthService().signOut();
+                if (context.mounted) {
+                  Navigator.pushAndRemoveUntil(
+                    context,
+                    MaterialPageRoute(builder: (_) => const LoginScreen()),
+                    (route) => false,
+                  );
+                }
+              },
+              icon: const Icon(Icons.logout),
+              label: const Text('Logout'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(30),
+                ),
+              ),
             ),
           ),
         ],

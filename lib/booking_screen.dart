@@ -6,6 +6,30 @@ import '../models/booking_data.dart';
 import '../services/firestore_service.dart';
 import 'payment_confirmation_screen.dart';
 
+// --- MODEL DATE EXCEPTION (Internal Helper) ---
+class DateException {
+  DateTime date;
+  bool isFullDay;
+  String openTime;
+  String closeTime;
+
+  DateException({
+    required this.date,
+    required this.isFullDay,
+    this.openTime = '06:00',
+    this.closeTime = '23:00',
+  });
+
+  factory DateException.fromMap(Map<String, dynamic> map) {
+    return DateException(
+      date: DateTime.tryParse(map['date'] ?? '') ?? DateTime.now(),
+      isFullDay: map['isFullDay'] ?? true,
+      openTime: map['openTime'] ?? '06:00',
+      closeTime: map['closeTime'] ?? '23:00',
+    );
+  }
+}
+
 class BookingScreen extends StatefulWidget {
   const BookingScreen({super.key});
 
@@ -15,32 +39,27 @@ class BookingScreen extends StatefulWidget {
 
 class _BookingScreenState extends State<BookingScreen> {
   // --- STATE UTAMA ---
+  final List<SelectedSlot> _selectedDrafts = []; // Keranjang sementara
 
-  // 1. KERANJANG BELANJA
-  final List<SelectedSlot> _selectedDrafts = [];
-
-  // 2. STATE TAMPILAN
   DateTime _focusedDate = DateTime.now();
   int _activeCourtIndex = 1; // 1 = Lapangan 1, 2 = Lapangan 2
 
-  // 3. DATA DATABASE
-  List<String> _bookedSlotsOnFocusedDay = [];
+  // --- DATA DARI DATABASE ---
+  List<String> _bookedSlotsOnFocusedDay = []; // Slot merah
   bool _isLoadingSlots = true;
   bool _isLocaleReady = false;
 
-  // Pricing
-  int _pricePerHour = 85000;
-  int _session1Price = 85000;
+  // PRICING
+  int _session1Price = 75000;
+  int _session2Price = 95000;
   int _discountPercent = 0;
 
-  // --- LOGIC BARU: Operational Hours (DIPERBAIKI) ---
-  // Menggunakan Map karena struktur di Firebase kamu adalah Object (Key-Value), bukan List
+  // OPERATIONAL (RUTIN & EXCEPTION)
   Map<String, dynamic> _weeklySchedule = {};
-
-  // List jam yang ditampilkan
+  List<DateException> _exceptions = []; // [BARU] List Pengecualian
   List<String> _availableTimes = [];
 
-  // Controller UI
+  // CONTROLLER
   late PageController _datePageController;
   final PageController _carouselController = PageController(
     viewportFraction: 0.92,
@@ -54,15 +73,9 @@ class _BookingScreenState extends State<BookingScreen> {
     initializeDateFormatting('id_ID', null).then((_) {
       if (mounted) {
         setState(() => _isLocaleReady = true);
-
-        // 1. Ambil data operasional
-        _listenToOperationalHours();
-
-        // 2. Ambil data booking orang lain
-        _listenToRealtimeAvailability();
-
-        // 3. Ambil data harga
         _listenToPricing();
+        _listenToOperationalHours();
+        _listenToRealtimeAvailability();
       }
     });
   }
@@ -74,85 +87,74 @@ class _BookingScreenState extends State<BookingScreen> {
     super.dispose();
   }
 
-  // --- LOGIC 1: FETCH SLOT MERAH (BOOKED) ---
-  void _listenToRealtimeAvailability() {
-    if (!_isLocaleReady) return;
-
-    setState(() => _isLoadingSlots = true);
-
-    FirestoreService().getOrdersStream().listen((snapshot) {
-      List<String> takenSlots = [];
-      String targetDateStr = DateFormat(
-        'EEEE, d MMMM yyyy',
-        'id_ID',
-      ).format(_focusedDate);
-      String targetCourtStr = 'Lapangan $_activeCourtIndex';
-
-      for (var doc in snapshot.docs) {
-        var data = doc.data() as Map<String, dynamic>;
-        // Skip jika status batal/ditolak
-        if (data['status'] == 'Cancelled' || data['status'] == 'Ditolak')
-          continue;
-
-        List bookings = data['bookings'] is List ? data['bookings'] : [];
-        for (var booking in bookings) {
-          if (booking['court'] == targetCourtStr) {
-            List slots = booking['slots'] is List ? booking['slots'] : [];
-            for (var s in slots) {
-              if (s['date'] == targetDateStr) {
-                takenSlots.add(s['time']);
-              }
-            }
-          }
-        }
-      }
-
-      if (mounted) {
-        setState(() {
-          _bookedSlotsOnFocusedDay = takenSlots;
-          _isLoadingSlots = false;
-        });
-      }
-    });
-  }
-
-  // --- LOGIC 2: FETCH HARGA ---
+  // --- 1. LOGIC HARGA ---
   void _listenToPricing() {
     FirestoreService().getPricingStream().listen((snapshot) {
       if (snapshot.exists && mounted) {
         final data = snapshot.data() as Map<String, dynamic>;
         setState(() {
-          _session1Price = data['session1Price'] ?? 85000;
+          _session1Price = data['session1Price'] ?? 75000;
+          _session2Price = data['session2Price'] ?? 95000;
           _discountPercent = data['discountPercent'] ?? 0;
-          _pricePerHour = _session1Price;
         });
       }
     });
   }
 
-  // --- LOGIC 3: FETCH OPERATIONAL HOURS (PERBAIKAN TOTAL) ---
+  int _getPriceForTime(String timeSlot) {
+    try {
+      int startHour = int.parse(timeSlot.split(':')[0]);
+      if (startHour < 18) {
+        return _session1Price;
+      } else {
+        return _session2Price;
+      }
+    } catch (e) {
+      return _session2Price;
+    }
+  }
+
+  // --- 2. LOGIC JAM OPERASIONAL (DIPERBAIKI: Support Exceptions) ---
   void _listenToOperationalHours() {
+    print("🔥 DEBUG: Memulai listener Operational Hours...");
     FirestoreService().getOperationalStream().listen((snapshot) {
       if (snapshot.exists && mounted) {
-        // Ambil seluruh data dokumen sebagai Map (Object)
         final data = snapshot.data() as Map<String, dynamic>;
 
+        // 1. Ambil Jadwal Rutin
+        final scheduleData = data['schedule'];
+
+        // 2. Ambil Pengecualian (Exceptions)
+        final exceptionsData = data['exceptions'];
+
         setState(() {
-          _weeklySchedule = data;
+          // Parse Schedule
+          if (scheduleData is Map<String, dynamic>) {
+            _weeklySchedule = scheduleData;
+          } else {
+            _weeklySchedule = {};
+          }
+
+          // Parse Exceptions
+          if (exceptionsData is List) {
+            _exceptions = exceptionsData
+                .map((e) => DateException.fromMap(e as Map<String, dynamic>))
+                .toList();
+            print("✅ Loaded ${_exceptions.length} exceptions");
+          } else {
+            _exceptions = [];
+          }
         });
 
-        // Debugging di console untuk memastikan data masuk
-        print("📦 DATA JADWAL DARI FIREBASE: $_weeklySchedule");
-
-        // Hitung ulang jam buka
+        // Update UI setelah data masuk
         _updateAvailableTimesForFocusedDate();
       }
     });
   }
 
-  // Helper untuk menerjemahkan Hari Indo -> Inggris (Key Database)
   String _mapDayToEnglishKey(String indonesianDay) {
-    switch (indonesianDay) {
+    String day = indonesianDay.trim();
+    switch (day) {
       case 'Senin':
         return 'Monday';
       case 'Selasa':
@@ -172,94 +174,129 @@ class _BookingScreenState extends State<BookingScreen> {
     }
   }
 
-  // --- FUNGSI UPDATE JAM BUKA (LOGIKA BARU) ---
+  // LOGIKA INTI: Penentuan Buka/Tutup (Cek Exception Dulu!)
   void _updateAvailableTimesForFocusedDate() {
-    // 1. Dapatkan nama hari Indonesia (Contoh: "Minggu")
-    String dayNameID = _getDayName(_focusedDate);
-
-    // 2. Ubah jadi Inggris agar cocok dengan Database (Contoh: "Sunday")
-    String dbKey = _mapDayToEnglishKey(dayNameID);
-
-    print("🔍 Cek Jadwal: Hari $dayNameID -> Key DB: $dbKey");
-
-    // 3. Ambil data spesifik hari itu dari Map
-    var dayData = _weeklySchedule[dbKey];
-
-    bool isOpen = false;
+    bool isOpen = true;
     String openTime = '06:00';
     String closeTime = '23:00';
+    bool isExceptionFound = false;
 
-    // 4. Cek kelengkapan data
-    if (dayData != null && dayData is Map) {
-      // Cek field 'isOpen' sesuai screenshot database kamu
-      isOpen = dayData['isOpen'] == true;
+    // A. CEK APAKAH TANGGAL INI ADA DI LIST EXCEPTION?
+    String focusedDateStr = DateFormat('yyyy-MM-dd').format(_focusedDate);
 
-      // Ambil jam jika ada, kalau tidak pakai default
-      if (dayData.containsKey('openTime')) openTime = dayData['openTime'];
-      if (dayData.containsKey('closeTime')) closeTime = dayData['closeTime'];
-    }
-
-    // 5. Update UI
-    if (isOpen) {
-      print("✅ STATUS: BUKA ($openTime - $closeTime)");
-      setState(() {
-        _availableTimes = _generateTimeSlots(openTime, closeTime);
-      });
-    } else {
-      print("❌ STATUS: TUTUP (isOpen is false or null)");
-      setState(() {
-        _availableTimes = [];
-      });
-    }
-  }
-
-  // Helper: Generate list jam "06:00 - 07:00", dst
-  List<String> _generateTimeSlots(String openTime, String closeTime) {
-    final times = <String>[];
     try {
-      final openParts = openTime.split(':');
-      final closeParts = closeTime.split(':');
+      final exception = _exceptions.firstWhere(
+        (ex) => DateFormat('yyyy-MM-dd').format(ex.date) == focusedDateStr,
+      );
 
-      int openHour = int.parse(openParts[0]);
-      int closeHour = int.parse(closeParts[0]);
+      // Jika ketemu exception:
+      isExceptionFound = true;
+      print("🚨 EXCEPTION FOUND untuk tanggal $focusedDateStr!");
 
-      for (int hour = openHour; hour < closeHour; hour++) {
-        String start = hour.toString().padLeft(2, '0') + ':00';
-        String end = (hour + 1).toString().padLeft(2, '0') + ':00';
-        times.add('$start - $end');
+      if (exception.isFullDay) {
+        isOpen = false; // Tutup seharian
+        print("   -> Status: TUTUP SEHARIAN");
+      } else {
+        isOpen = true; // Buka jam khusus
+        openTime = exception.openTime;
+        closeTime = exception.closeTime;
+        print("   -> Status: JAM KHUSUS ($openTime - $closeTime)");
       }
     } catch (e) {
-      print("Error generating times: $e");
-      return _getDefaultTimes();
+      // Tidak ketemu exception, lanjut ke jadwal rutin
+      isExceptionFound = false;
     }
-    return times.isEmpty ? _getDefaultTimes() : times;
-  }
 
-  List<String> _getDefaultTimes() {
-    return List.generate(17, (index) {
-      int hour = 6 + index;
-      String start = hour.toString().padLeft(2, '0') + ':00';
-      String end = (hour + 1).toString().padLeft(2, '0') + ':00';
-      return '$start - $end';
+    // B. JIKA TIDAK ADA EXCEPTION, PAKAI JADWAL RUTIN
+    if (!isExceptionFound) {
+      String dayNameID = DateFormat('EEEE', 'id_ID').format(_focusedDate);
+      String dbKey = _mapDayToEnglishKey(dayNameID);
+
+      var dayData = _weeklySchedule[dbKey];
+
+      if (dayData != null && dayData is Map) {
+        var rawIsOpen = dayData['isOpen'];
+        if (rawIsOpen is bool)
+          isOpen = rawIsOpen;
+        else if (rawIsOpen is String)
+          isOpen = rawIsOpen.toLowerCase() == 'true';
+
+        openTime = dayData['openTime']?.toString() ?? '06:00';
+        closeTime = dayData['closeTime']?.toString() ?? '23:00';
+      }
+    }
+
+    // 4. Update UI
+    setState(() {
+      if (!isOpen) {
+        _availableTimes = []; // Toko Tutup
+      } else {
+        _availableTimes = _generateTimeSlots(openTime, closeTime);
+      }
     });
   }
 
-  String _getDayName(DateTime date) {
-    const days = [
-      'Senin',
-      'Selasa',
-      'Rabu',
-      'Kamis',
-      'Jumat',
-      'Sabtu',
-      'Minggu',
-    ];
-    return days[date.weekday - 1];
+  List<String> _generateTimeSlots(String open, String close) {
+    List<String> times = [];
+    try {
+      int start = int.parse(open.split(':')[0]);
+      int end = int.parse(close.split(':')[0]);
+
+      for (int i = start; i < end; i++) {
+        String s = i.toString().padLeft(2, '0') + ":00";
+        String e = (i + 1).toString().padLeft(2, '0') + ":00";
+        times.add("$s - $e");
+      }
+    } catch (e) {
+      print("❌ Error generate jam: $e");
+      return ["06:00 - 07:00", "07:00 - 08:00"]; // Fallback
+    }
+    return times;
   }
 
-  // --- LOGIC 4: INTERAKSI USER ---
+  // --- 3. LOGIC KETERSEDIAAN ---
+  void _listenToRealtimeAvailability() {
+    if (!_isLocaleReady) return;
+    setState(() => _isLoadingSlots = true);
 
+    FirestoreService().getOrdersStream().listen((snapshot) {
+      List<String> takenSlots = [];
+      String targetDateStr = DateFormat(
+        'EEEE, d MMMM yyyy',
+        'id_ID',
+      ).format(_focusedDate);
+      String targetCourtStr = 'Lapangan $_activeCourtIndex';
+
+      for (var doc in snapshot.docs) {
+        var data = doc.data() as Map<String, dynamic>;
+        if (data['status'] == 'Cancelled' || data['status'] == 'Ditolak')
+          continue;
+
+        List bookings = data['bookings'] ?? [];
+        for (var booking in bookings) {
+          if (booking['court'] == targetCourtStr) {
+            List slots = booking['slots'] ?? [];
+            for (var s in slots) {
+              if (s['date'] == targetDateStr) {
+                takenSlots.add(s['time']);
+              }
+            }
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _bookedSlotsOnFocusedDay = takenSlots;
+          _isLoadingSlots = false;
+        });
+      }
+    });
+  }
+
+  // --- INTERAKSI USER ---
   void _toggleSlot(String time) {
+    int slotPrice = _getPriceForTime(time);
     int index = _selectedDrafts.indexWhere(
       (slot) =>
           slot.time == time &&
@@ -276,6 +313,7 @@ class _BookingScreenState extends State<BookingScreen> {
             courtName: 'Lapangan $_activeCourtIndex',
             date: _focusedDate,
             time: time,
+            price: slotPrice,
           ),
         );
       }
@@ -285,37 +323,34 @@ class _BookingScreenState extends State<BookingScreen> {
   void _onDatePageChanged(int index) {
     DateTime today = DateTime.now();
     DateTime newDate = today.add(Duration(days: index));
-
-    setState(() {
-      _focusedDate = newDate;
-    });
+    setState(() => _focusedDate = newDate);
 
     _listenToRealtimeAvailability();
-    _updateAvailableTimesForFocusedDate(); // Hitung ulang jam buka
+    _updateAvailableTimesForFocusedDate();
   }
 
   bool _isSameDay(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
   }
 
-  int get _totalCost {
-    int subtotal = _selectedDrafts.length * _pricePerHour;
-    int discountAmount = (subtotal * _discountPercent) ~/ 100;
-    return subtotal - discountAmount;
+  int get _subTotal {
+    int total = 0;
+    for (var slot in _selectedDrafts) {
+      total += slot.price;
+    }
+    return total;
   }
 
-  String get _totalCostStr => NumberFormat.currency(
-    locale: 'id_ID',
-    symbol: 'Rp ',
-    decimalDigits: 0,
-  ).format(_totalCost);
+  int get _grandTotal {
+    int discountAmount = (_subTotal * _discountPercent) ~/ 100;
+    return _subTotal - discountAmount;
+  }
 
   void _goToPayment() {
     final bookingData = BookingData(
       slots: _selectedDrafts,
-      totalCost: _totalCost,
+      totalCost: _grandTotal,
     );
-
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -324,12 +359,11 @@ class _BookingScreenState extends State<BookingScreen> {
     );
   }
 
-  // --- UI BUILD ---
+  // --- UI ---
   @override
   Widget build(BuildContext context) {
-    if (!_isLocaleReady) {
+    if (!_isLocaleReady)
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
 
     return Scaffold(
       backgroundColor: Colors.grey.shade50,
@@ -337,68 +371,13 @@ class _BookingScreenState extends State<BookingScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            const SizedBox(height: 16),
+            const SizedBox(height: 10),
             _buildFirebaseCarousel(),
-            const SizedBox(height: 16),
-
-            // HEADER TANGGAL
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        "Jadwal Lapangan",
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18,
-                        ),
-                      ),
-                      Text(
-                        DateFormat(
-                          'EEEE, d MMMM yyyy',
-                          'id_ID',
-                        ).format(_focusedDate),
-                        style: TextStyle(
-                          color: Colors.blue.shade700,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.calendar_month, color: Colors.blue),
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: _focusedDate,
-                        firstDate: DateTime.now(),
-                        lastDate: DateTime(2100),
-                      );
-                      if (picked != null) {
-                        int daysDiff = picked.difference(DateTime.now()).inDays;
-                        if (picked.day == DateTime.now().day &&
-                            picked.month == DateTime.now().month &&
-                            picked.year == DateTime.now().year) {
-                          daysDiff = 0;
-                        }
-                        if (daysDiff >= 0) {
-                          _datePageController.jumpToPage(daysDiff);
-                        }
-                      }
-                    },
-                  ),
-                ],
-              ),
-            ),
-
+            const SizedBox(height: 10),
+            _buildDateHeader(),
             const SizedBox(height: 10),
             _buildCourtSelector(),
             const SizedBox(height: 10),
-
             Expanded(
               child: PageView.builder(
                 controller: _datePageController,
@@ -419,29 +398,70 @@ class _BookingScreenState extends State<BookingScreen> {
     );
   }
 
-  // --- WIDGETS ---
+  Widget _buildDateHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                "Jadwal Lapangan",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              ),
+              Text(
+                DateFormat('EEEE, d MMMM yyyy', 'id_ID').format(_focusedDate),
+                style: TextStyle(
+                  color: Colors.blue.shade700,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          IconButton(
+            icon: const Icon(Icons.calendar_month, color: Colors.blue),
+            onPressed: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: _focusedDate,
+                firstDate: DateTime.now(),
+                lastDate: DateTime.now().add(const Duration(days: 30)),
+              );
+              if (picked != null) {
+                int daysDiff = picked.difference(DateTime.now()).inDays;
+                if (daysDiff < 0) daysDiff = 0;
+                _datePageController.jumpToPage(daysDiff);
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildFirebaseCarousel() {
     return StreamBuilder<DocumentSnapshot>(
       stream: FirestoreService().getCarouselStream(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) return const SizedBox(height: 160);
+        if (!snapshot.hasData) return const SizedBox(height: 150);
         var data = snapshot.data!.data() as Map<String, dynamic>?;
         List images = data?['images'] ?? [];
-        if (images.isEmpty) return const SizedBox(height: 160);
+        if (images.isEmpty) return const SizedBox(height: 150);
 
         return SizedBox(
-          height: 160,
+          height: 150,
           child: PageView.builder(
             controller: _carouselController,
             itemCount: images.length,
             itemBuilder: (context, index) {
               return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 5),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: Image.network(
-                    images[index]['url'] ?? '',
+                    images[index]['url'],
                     fit: BoxFit.cover,
                     errorBuilder: (ctx, err, stack) =>
                         Container(color: Colors.grey.shade300),
@@ -470,75 +490,60 @@ class _BookingScreenState extends State<BookingScreen> {
 
   Widget _buildCourtTab(String label, int id) {
     bool isActive = _activeCourtIndex == id;
-    bool hasSelection = _selectedDrafts.any(
-      (s) => s.courtName == 'Lapangan $id',
-    );
-
     return Expanded(
       child: InkWell(
         onTap: () {
-          setState(() {
-            _activeCourtIndex = id;
-          });
+          setState(() => _activeCourtIndex = id);
           _listenToRealtimeAvailability();
         },
-        child: Stack(
-          children: [
-            Container(
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(
-                color: isActive ? Colors.blue : Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: isActive ? Colors.blue : Colors.grey.shade300,
-                ),
-              ),
-              child: Text(
-                label,
-                style: TextStyle(
-                  color: isActive ? Colors.white : Colors.grey.shade700,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: isActive ? Colors.blue : Colors.white,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isActive ? Colors.blue : Colors.grey.shade300,
             ),
-            if (hasSelection)
-              Positioned(
-                right: 5,
-                top: 5,
-                child: CircleAvatar(
-                  radius: 4,
-                  backgroundColor: isActive ? Colors.white : Colors.orange,
-                ),
-              ),
-          ],
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: isActive ? Colors.white : Colors.grey.shade700,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ),
       ),
     );
   }
 
   Widget _buildSlotGrid() {
+    // TAMPILAN JIKA TUTUP
     if (_availableTimes.isEmpty) {
+      // Cek apakah tutup karena Exception?
+      String reason = "Tidak ada jadwal operasional.";
+      try {
+        final ex = _exceptions.firstWhere(
+          (e) =>
+              DateFormat('yyyy-MM-dd').format(e.date) ==
+              DateFormat('yyyy-MM-dd').format(_focusedDate),
+        );
+        // Jika karena pengecualian, tampilkan alasannya? (Opsional)
+        // reason = "Tutup: " + ex.reason;
+      } catch (_) {}
+
       return Center(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.lock_clock, size: 60, color: Colors.grey[300]),
-            const SizedBox(height: 16),
-            Text(
-              'Fasilitas Tutup',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Colors.grey[600],
-              ),
+            const SizedBox(height: 50),
+            Icon(Icons.block, size: 50, color: Colors.red.shade200),
+            const SizedBox(height: 10),
+            const Text(
+              "Lapangan Tutup",
+              style: TextStyle(fontSize: 18, color: Colors.grey),
             ),
-            const SizedBox(height: 8),
-            Text(
-              'Tidak ada jadwal operasional pada\n${DateFormat('EEEE, d MMMM', 'id_ID').format(_focusedDate)}',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey[500]),
-            ),
+            Text(reason, style: const TextStyle(color: Colors.grey)),
           ],
         ),
       );
@@ -552,7 +557,7 @@ class _BookingScreenState extends State<BookingScreen> {
         itemCount: _availableTimes.length,
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 4,
-          childAspectRatio: 1.8,
+          childAspectRatio: 1.6,
           crossAxisSpacing: 8,
           mainAxisSpacing: 8,
         ),
@@ -560,45 +565,60 @@ class _BookingScreenState extends State<BookingScreen> {
           String time = _availableTimes[index];
           bool isBooked = _bookedSlotsOnFocusedDay.contains(time);
           bool isSelected = _selectedDrafts.any(
-            (slot) =>
-                slot.time == time &&
-                slot.courtName == 'Lapangan $_activeCourtIndex' &&
-                _isSameDay(slot.date, _focusedDate),
+            (s) =>
+                s.time == time &&
+                s.courtName == 'Lapangan $_activeCourtIndex' &&
+                _isSameDay(s.date, _focusedDate),
           );
 
           Color bgColor = Colors.white;
           Color textColor = Colors.black87;
-          Color borderColor = Colors.grey.shade300;
 
           if (isBooked) {
             bgColor = Colors.red.shade50;
             textColor = Colors.red.shade200;
-            borderColor = Colors.red.shade100;
           } else if (isSelected) {
             bgColor = Colors.blue;
             textColor = Colors.white;
-            borderColor = Colors.blue;
           }
+
+          int price = _getPriceForTime(time);
+          String priceLabel = NumberFormat.compactCurrency(
+            locale: 'id_ID',
+            symbol: '',
+          ).format(price);
 
           return InkWell(
             onTap: isBooked ? null : () => _toggleSlot(time),
             borderRadius: BorderRadius.circular(8),
             child: Container(
-              alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: bgColor,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: borderColor),
-              ),
-              child: Text(
-                time.replaceAll(' - ', '\n'),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: textColor,
-                  decoration: isBooked ? TextDecoration.lineThrough : null,
+                border: Border.all(
+                  color: isSelected ? Colors.blue : Colors.grey.shade300,
                 ),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    time.split(' - ')[0],
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                      color: textColor,
+                    ),
+                  ),
+                  if (!isBooked)
+                    Text(
+                      priceLabel,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: isSelected ? Colors.white70 : Colors.grey,
+                      ),
+                    ),
+                ],
               ),
             ),
           );
@@ -608,88 +628,58 @@ class _BookingScreenState extends State<BookingScreen> {
   }
 
   Widget _buildBottomSummary() {
+    String totalStr = NumberFormat.currency(
+      locale: 'id_ID',
+      symbol: 'Rp ',
+      decimalDigits: 0,
+    ).format(_grandTotal);
+
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.blue.shade50,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-        boxShadow: const [
-          BoxShadow(color: Colors.black12, blurRadius: 10, spreadRadius: 2),
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black12,
+            blurRadius: 10,
+            offset: const Offset(0, -5),
+          ),
         ],
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
       ),
       child: SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    '${_selectedDrafts.length} slot × ${NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0).format(_pricePerHour)}',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.indigo.shade700,
-                    ),
-                  ),
-                  if (_discountPercent > 0)
-                    Text(
-                      '${_discountPercent}% OFF',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.green.shade700,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      "Grand Total:",
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                        color: Colors.indigo,
-                      ),
-                    ),
-                    Text(
-                      _totalCostStr,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.indigo,
-                        fontSize: 20,
-                      ),
-                    ),
-                  ],
+                Text(
+                  "${_selectedDrafts.length} Slot Terpilih",
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
-                ElevatedButton(
-                  onPressed: _goToPayment,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 32,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    elevation: 0,
-                  ),
-                  child: const Text(
-                    "Lanjut Bayar",
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                Text(
+                  totalStr,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blue.shade800,
                   ),
                 ),
               ],
+            ),
+            ElevatedButton(
+              onPressed: _goToPayment,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 30,
+                  vertical: 12,
+                ),
+              ),
+              child: const Text("LANJUT BAYAR"),
             ),
           ],
         ),

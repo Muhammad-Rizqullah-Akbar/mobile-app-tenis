@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'dart:convert';
-import 'dart:html' as html;
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'services/firestore_service.dart';
 
 class AdminHistoryScreen extends StatefulWidget {
@@ -19,6 +21,7 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
   Set<String> _selectedOrderIds = {};
   String _filterStatus = 'Semua';
 
+  // --- Date Picker Logic ---
   Future<void> _selectDate(BuildContext context, bool isStart) async {
     final DateTime? picked = await showDatePicker(
       context: context,
@@ -48,6 +51,7 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
     });
   }
 
+  // --- Bulk Update Logic ---
   void _bulkUpdateStatus(String newStatus) async {
     if (_selectedOrderIds.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -70,13 +74,15 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
+              Navigator.pop(context); // Tutup dialog dulu
+
               try {
                 await _firestoreService.bulkUpdateOrderStatus(
                   _selectedOrderIds.toList(),
                   newStatus,
                 );
+
                 if (mounted) {
-                  Navigator.pop(context);
                   setState(() => _selectedOrderIds.clear());
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -86,7 +92,6 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                 }
               } catch (e) {
                 if (mounted) {
-                  Navigator.pop(context);
                   ScaffoldMessenger.of(
                     context,
                   ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
@@ -100,6 +105,7 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
     );
   }
 
+  // --- Delete Logic ---
   Future<void> _deleteOrder(String docId, String orderId) async {
     showDialog(
       context: context,
@@ -115,10 +121,11 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
+              Navigator.pop(context); // Tutup dialog
+
               try {
                 await _firestoreService.deleteOrder(docId);
                 if (mounted) {
-                  Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text('✅ Pesanan berhasil dihapus!'),
@@ -127,7 +134,6 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                 }
               } catch (e) {
                 if (mounted) {
-                  Navigator.pop(context);
                   ScaffoldMessenger.of(
                     context,
                   ).showSnackBar(SnackBar(content: Text('❌ Error: $e')));
@@ -142,9 +148,9 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
     );
   }
 
+  // --- CSV Export Logic (Disimpan untuk nanti) ---
   Future<void> _exportToCSV(List<DocumentSnapshot> orders) async {
     try {
-      // CSV Headers
       final headers = [
         'No',
         'Order ID',
@@ -155,58 +161,39 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
         'Total (Rp)',
         'Sumber',
       ];
-      final rows = <List<String>>[];
+      final csvBuffer = StringBuffer();
+      csvBuffer.writeln(headers.join(','));
 
-      // CSV Data
       for (int i = 0; i < orders.length; i++) {
         final data = orders[i].data() as Map<String, dynamic>;
         final createdAt = data['createdAt'] is Timestamp
             ? (data['createdAt'] as Timestamp).toDate()
             : DateTime.now();
 
-        rows.add([
+        List<String> row = [
           (i + 1).toString(),
           data['orderId'] ?? 'N/A',
-          data['customerName'] ?? 'N/A',
-          data['customerPhone'] ?? 'N/A',
+          '"${data['customerName'] ?? 'N/A'}"',
+          '"${data['customerPhone'] ?? 'N/A'}"',
           data['status'] ?? 'N/A',
           DateFormat('dd/MM/yyyy HH:mm').format(createdAt),
           (data['totalPrice'] ?? 0).toString(),
           data['source'] ?? 'mobile_app',
-        ]);
+        ];
+        csvBuffer.writeln(row.join(','));
       }
 
-      // Build CSV String
-      final csv = StringBuffer();
-      csv.writeln(headers.join(','));
-      for (final row in rows) {
-        csv.writeln(row.map((cell) => '\"$cell\"').join(','));
-      }
+      final directory = await getTemporaryDirectory();
+      final path =
+          '${directory.path}/laporan_pesanan_${DateFormat('yyyyMMdd_HHmm').format(DateTime.now())}.csv';
+      final file = File(path);
+      await file.writeAsString(csvBuffer.toString());
 
-      final csvContent = csv.toString();
-      final bytes = utf8.encode(csvContent);
-      final blob = html.Blob([bytes], 'text/csv;charset=utf-8');
-      final url = html.Url.createObjectUrlFromBlob(blob);
+      await Share.shareXFiles([XFile(path)], text: 'Export Data Pesanan CSV');
 
-      // Create and click download link
-      (html.AnchorElement(href: url)..setAttribute(
-            'download',
-            'export_pesanan_${DateFormat('yyyy-MM-dd_HHmm').format(DateTime.now())}.csv',
-          ))
-          .click();
-
-      // Cleanup
-      html.Url.revokeObjectUrl(url);
-
-      // Show success message
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '✅ Export CSV berhasil! ${orders.length} pesanan diunduh',
-            ),
-            duration: const Duration(seconds: 2),
-          ),
+          const SnackBar(content: Text('✅ Menu bagikan CSV terbuka!')),
         );
       }
     } catch (e) {
@@ -218,17 +205,192 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
     }
   }
 
+  // --- SHOW DETAIL ORDER + BUKTI BAYAR ---
+  void _showOrderDetail(BuildContext context, Map<String, dynamic> data) {
+    String proofUrl = data['proofUrl'] ?? '';
+    List bookings = data['bookings'] ?? [];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.5,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (_, controller) => SingleChildScrollView(
+          controller: controller,
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              const Text(
+                "Detail Pesanan",
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 20),
+
+              _buildDetailRow("Nama", data['customerName'] ?? '-'),
+              _buildDetailRow("No. HP", data['customerPhone'] ?? '-'),
+              _buildDetailRow(
+                "Total",
+                "Rp ${NumberFormat('#,###').format(data['totalPrice'] ?? 0)}",
+              ),
+
+              const Divider(height: 30),
+
+              const Text(
+                "Jadwal Booking:",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              ...bookings.map(
+                (b) => Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        b['court'] ?? '-',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      if (b['slots'] != null)
+                        ...(b['slots'] as List)
+                            .map((s) => Text("${s['date']} (${s['time']})"))
+                            .toList(),
+                    ],
+                  ),
+                ),
+              ),
+
+              const Divider(height: 30),
+
+              const Text(
+                "Bukti Pembayaran:",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 10),
+
+              if (proofUrl.isNotEmpty && proofUrl.startsWith('http'))
+                GestureDetector(
+                  onTap: () {
+                    showDialog(
+                      context: context,
+                      builder: (_) => Dialog(
+                        child: InteractiveViewer(
+                          child: Image.network(proofUrl),
+                        ),
+                      ),
+                    );
+                  },
+                  child: Container(
+                    height: 250,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.network(
+                        proofUrl,
+                        fit: BoxFit.cover,
+                        loadingBuilder: (ctx, child, loading) {
+                          if (loading == null) return child;
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
+                        },
+                        errorBuilder: (ctx, error, stackTrace) => const Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.broken_image,
+                                size: 40,
+                                color: Colors.grey,
+                              ),
+                              Text(
+                                "Gagal memuat gambar",
+                                style: TextStyle(color: Colors.grey),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.shade200),
+                  ),
+                  child: const Text(
+                    "Tidak ada bukti pembayaran.\n(Mungkin booking manual/tunai)",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.orange),
+                  ),
+                ),
+
+              const SizedBox(height: 40),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.grey)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Riwayat Pesanan'),
-        backgroundColor: Theme.of(context).primaryColor,
+        backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
       ),
       body: Column(
         children: [
-          // EXPORT BUTTON
+          // TOMBOL EXPORT DISEMBUNYIKAN SEMENTARA
+          /*
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: StreamBuilder<QuerySnapshot>(
@@ -236,13 +398,9 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                   ? _firestoreService.getOrdersStream()
                   : _firestoreService.getBookingsByStatus(_filterStatus),
               builder: (context, snapshot) {
-                final canExport =
-                    snapshot.hasData &&
-                    (snapshot.data?.docs.isNotEmpty ?? false);
+                final canExport = snapshot.hasData && (snapshot.data?.docs.isNotEmpty ?? false);
                 return ElevatedButton.icon(
-                  onPressed: canExport
-                      ? () => _exportToCSV(snapshot.data!.docs)
-                      : null,
+                  onPressed: canExport ? () => _exportToCSV(snapshot.data!.docs) : null,
                   icon: const Icon(Icons.download),
                   label: const Text('📥 Export ke CSV'),
                   style: ElevatedButton.styleFrom(
@@ -253,6 +411,8 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
               },
             ),
           ),
+          */
+          const SizedBox(height: 10), // Ganti dengan spacer kecil
           // FILTER SECTION
           Padding(
             padding: const EdgeInsets.all(16),
@@ -264,10 +424,17 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                 ),
                 const SizedBox(height: 12),
+
                 // Status Filter
-                DropdownButton<String>(
+                DropdownButtonFormField<String>(
                   value: _filterStatus,
-                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                  ),
                   items:
                       [
                             'Semua',
@@ -286,44 +453,47 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                   onChanged: (value) =>
                       setState(() => _filterStatus = value ?? 'Semua'),
                 ),
+
                 const SizedBox(height: 12),
+
                 // Date Range
                 Row(
                   children: [
                     Expanded(
-                      child: ElevatedButton.icon(
+                      child: OutlinedButton.icon(
                         onPressed: () => _selectDate(context, true),
                         icon: const Icon(Icons.calendar_today, size: 16),
                         label: Text(
                           _startDate == null
-                              ? 'Dari'
-                              : DateFormat('dd/MM/yyyy').format(_startDate!),
+                              ? 'Dari Tgl'
+                              : DateFormat('dd/MM/yy').format(_startDate!),
                         ),
                       ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: ElevatedButton.icon(
+                      child: OutlinedButton.icon(
                         onPressed: () => _selectDate(context, false),
                         icon: const Icon(Icons.calendar_today, size: 16),
                         label: Text(
                           _endDate == null
-                              ? 'Sampai'
-                              : DateFormat('dd/MM/yyyy').format(_endDate!),
+                              ? 'Sampai Tgl'
+                              : DateFormat('dd/MM/yy').format(_endDate!),
                         ),
                       ),
                     ),
                     const SizedBox(width: 8),
-                    ElevatedButton.icon(
+                    IconButton(
                       onPressed: _clearFilters,
-                      icon: const Icon(Icons.clear, size: 16),
-                      label: const Text('Reset'),
+                      icon: const Icon(Icons.refresh),
+                      tooltip: "Reset Filter",
                     ),
                   ],
                 ),
               ],
             ),
           ),
+
           // BULK ACTION BUTTONS
           if (_selectedOrderIds.isNotEmpty)
             Padding(
@@ -358,7 +528,9 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                 ],
               ),
             ),
+
           const SizedBox(height: 8),
+
           // ORDERS LIST
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
@@ -370,24 +542,12 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                if (snapshot.hasError) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(
-                          Icons.error_outline,
-                          size: 48,
-                          color: Colors.red,
-                        ),
-                        const SizedBox(height: 16),
-                        Text('Error: ${snapshot.error}'),
-                      ],
-                    ),
-                  );
-                }
+                if (snapshot.hasError)
+                  return Center(child: Text('Error: ${snapshot.error}'));
 
                 final docs = snapshot.data?.docs ?? [];
+
+                // Filter by Date (Client Side)
                 final filteredDocs = _startDate != null && _endDate != null
                     ? docs.where((doc) {
                         final data = doc.data() as Map<String, dynamic>;
@@ -402,20 +562,7 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                     : docs;
 
                 if (filteredDocs.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.search_off,
-                          size: 48,
-                          color: Colors.grey[400],
-                        ),
-                        const SizedBox(height: 16),
-                        const Text('Tidak ada pesanan'),
-                      ],
-                    ),
-                  );
+                  return const Center(child: Text('Tidak ada pesanan'));
                 }
 
                 return ListView.builder(
@@ -442,6 +589,7 @@ class _AdminHistoryScreenState extends State<AdminHistoryScreen> {
                       },
                       onDelete: (docId, orderId) =>
                           _deleteOrder(docId, orderId),
+                      onTap: () => _showOrderDetail(context, data),
                     );
                   },
                 );
@@ -460,13 +608,16 @@ class AdminOrderCard extends StatelessWidget {
   final bool isSelected;
   final Function(bool) onSelect;
   final Function(String, String) onDelete;
+  final VoidCallback onTap;
 
   const AdminOrderCard({
+    super.key,
     required this.docId,
     required this.data,
     required this.isSelected,
     required this.onSelect,
     required this.onDelete,
+    required this.onTap,
   });
 
   String _getStatusColor(String status) {
@@ -498,56 +649,73 @@ class AdminOrderCard extends StatelessWidget {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Stack(
         children: [
-          CheckboxListTile(
-            value: isSelected,
-            onChanged: (value) => onSelect(value ?? false),
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(_getStatusColor(status)),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        name,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+          // 1. AREA KLIK UTAMA (DETAIL)
+          InkWell(
+            onTap: onTap, // Membuka Detail Pesanan
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              // Padding kanan besar agar teks tidak tertimpa tombol hapus/checkbox
+              padding: const EdgeInsets.fromLTRB(16, 16, 50, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(_getStatusColor(status)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          name,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  orderId,
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-              ],
-            ),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 4),
-                Text(DateFormat('dd/MM/yyyy HH:mm').format(createdAt)),
-                Text(
-                  'Rp ${NumberFormat('#,###').format(total)}',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.green,
+                    ],
                   ),
-                ),
-              ],
+                  const SizedBox(height: 6),
+                  Text(
+                    orderId,
+                    style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                  ),
+                  Text(
+                    DateFormat('dd/MM/yyyy HH:mm').format(createdAt),
+                    style: TextStyle(fontSize: 12, color: Colors.grey[800]),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Rp ${NumberFormat('#,###').format(total)}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-          // Delete Button
+
+          // 2. TOMBOL HAPUS
           Positioned(
-            right: 8,
-            top: 8,
+            top: 0,
+            right: 0,
             child: IconButton(
               icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+              tooltip: 'Hapus',
               onPressed: () => onDelete(docId, orderId),
-              tooltip: 'Hapus pesanan',
+            ),
+          ),
+
+          // 3. CHECKBOX
+          Positioned(
+            bottom: 8,
+            right: 0,
+            child: Checkbox(
+              value: isSelected,
+              onChanged: (val) => onSelect(val ?? false),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(4),
+              ),
             ),
           ),
         ],
